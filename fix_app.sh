@@ -1,23 +1,88 @@
 #!/bin/bash
 # ═══════════════════════════════════════════════════════════════
 #  fix_app.sh — فیکس خودکار App.kt
-#  این اسکریپت جایگزینی‌ها، اصلاحات و فیکس‌های لازم را انجام می‌دهد
+#  این اسکریپت خودش فایل .kt رو در ریشه ریپو پیدا می‌کند
 # ═══════════════════════════════════════════════════════════════
 
 set -e
 
-APP="App.kt"
+# ═══════════════════════════════════════════════════════════════
+#  مرحله ۱: پیدا کردن فایل .kt در ریشه ریپو
+# ═══════════════════════════════════════════════════════════════
 
-if [ ! -f "$APP" ]; then
-    echo "❌ فایل App.kt پیدا نشد!"
+echo "🔍 جستجوی فایل .kt در ریشه ریپو..."
+echo ""
+
+# لیست فایل‌های .kt
+KT_FILES=$(find . -maxdepth 2 -name "*.kt" -type f 2>/dev/null | grep -v "/app/" || true)
+
+if [ -z "$KT_FILES" ]; then
+    echo "❌ هیچ فایل .kt در ریشه ریپو پیدا نشد!"
+    echo ""
+    echo "📁 محتوای ریشه ریپو:"
+    ls -la
+    echo ""
+    echo "⚠️ لطفاً یک فایل .kt در ریشه ریپو بساز."
     exit 1
 fi
 
-echo "📝 حجم اولیه App.kt: $(wc -l < $APP) خط"
+echo "📄 فایل‌های .kt پیدا شده:"
+echo "$KT_FILES"
+echo ""
+
+# اگر چند فایل بود، بزرگ‌ترین را انتخاب کن
+APP=$(echo "$KT_FILES" | xargs ls -S 2>/dev/null | head -1)
+echo "✅ انتخاب شد: $APP"
+echo ""
+
+# ═══════════════════════════════════════════════════════════════
+#  مرحله ۲: بررسی محتوا
+# ═══════════════════════════════════════════════════════════════
+
+LINES=$(wc -l < "$APP")
+echo "📝 حجم فایل: $LINES خط"
+
+if [ "$LINES" -lt 100 ]; then
+    echo "⚠️ فایل خیلی کوتاه است — احتمالاً اشتباه است"
+fi
+
+# بررسی اینکه کد اصلی است (شامل VpnConfig)
+if ! grep -q "data class VpnConfig" "$APP"; then
+    echo "⚠️ این فایل شامل کد اصلی PARSA VPN نیست!"
+    echo "   به دنبال فایلی می‌گردم که 'VpnConfig' داشته باشد..."
+    
+    FOUND=0
+    for f in $KT_FILES; do
+        if grep -q "data class VpnConfig" "$f"; then
+            APP="$f"
+            FOUND=1
+            echo "✅ پیدا شد: $APP"
+            break
+        fi
+    done
+    
+    if [ $FOUND -eq 0 ]; then
+        echo "❌ فایل حاوی کد اصلی PARSA VPN پیدا نشد!"
+        exit 1
+    fi
+fi
+
+# تغییر نام به App.kt اگر اسم دیگری دارد
+if [ "$APP" != "./App.kt" ] && [ "$APP" != "App.kt" ]; then
+    echo "🔄 تغییر نام $APP → App.kt"
+    mv "$APP" App.kt
+    APP="App.kt"
+fi
+
+echo ""
+echo "✅ فایل هدف: $APP"
+echo ""
 
 # ═══════════════════════════════════════════════════════════════
 #  ۱. فیکس تایپوهای رایج
 # ═══════════════════════════════════════════════════════════════
+
+echo "🔧 فیکس تایپوها..."
 
 # فیکس omposable → @Composable
 sed -i 's/^omposable/@Composable/g' "$APP"
@@ -25,24 +90,19 @@ sed -i 's/^omposable/@Composable/g' "$APP"
 # فیکس n App( → fun App(
 sed -i 's/^n App(/fun App(/g' "$APP"
 
-# فیکس جایگزینی importهای اشتباه
-sed -i 's/import libv2ray.Libv2ray/import libXray.LibXray/g' "$APP"
-
-# فیکس مسیر پکیج در realxray
-sed -i 's/Class.forName("libv2ray.Libv2ray")/Class.forName("libXray.LibXray")/g' "$APP"
+# فیکس n HomeFinal( → fun HomeFinal(
+sed -i 's/^n \([A-Z][a-zA-Z]*\)(/fun \1(/g' "$APP"
 
 # ═══════════════════════════════════════════════════════════════
-#  ۲. اضافه کردن importهای مورد نیاز اگر نبودند
+#  ۲. اضافه کردن importهای مورد نیاز
 # ═══════════════════════════════════════════════════════════════
 
 add_import_if_missing() {
     local import_line="$1"
     if ! grep -q "^import $import_line$" "$APP"; then
-        # اضافه کردن import بعد از آخرین import موجود
         local last_import_line=$(grep -n "^import " "$APP" | tail -1 | cut -d: -f1)
         if [ -n "$last_import_line" ]; then
             sed -i "${last_import_line}a import $import_line" "$APP"
-            echo "  ➕ اضافه شد: $import_line"
         fi
     fi
 }
@@ -54,7 +114,6 @@ add_import_if_missing "androidx.compose.foundation.border"
 add_import_if_missing "androidx.compose.foundation.combinedClickable"
 add_import_if_missing "androidx.compose.foundation.ExperimentalFoundationApi"
 add_import_if_missing "androidx.compose.foundation.layout.ColumnScope"
-add_import_if_missing "androidx.compose.foundation.layout.width"
 
 # Compose animation
 add_import_if_missing "androidx.compose.animation.core.Animatable"
@@ -85,6 +144,8 @@ add_import_if_missing "androidx.compose.material.icons.filled.Star"
 add_import_if_missing "androidx.compose.material.icons.filled.Sync"
 add_import_if_missing "androidx.compose.material.icons.filled.CheckCircle"
 add_import_if_missing "androidx.compose.material.icons.filled.Info"
+add_import_if_missing "androidx.compose.material.icons.filled.ArrowBack"
+add_import_if_missing "androidx.compose.material.icons.filled.Delete"
 add_import_if_missing "androidx.compose.material.icons.outlined.StarBorder"
 
 # Material3
@@ -94,55 +155,33 @@ add_import_if_missing "androidx.compose.material3.ScrollableTabRow"
 add_import_if_missing "androidx.compose.material3.Switch"
 add_import_if_missing "androidx.compose.material3.SwitchDefaults"
 add_import_if_missing "androidx.compose.material3.Tab"
+add_import_if_missing "androidx.compose.material3.Checkbox"
+add_import_if_missing "androidx.compose.material3.CheckboxDefaults"
 
 # Android
 add_import_if_missing "android.widget.Toast"
 add_import_if_missing "android.content.Context"
 add_import_if_missing "androidx.compose.ui.platform.LocalContext"
 add_import_if_missing "androidx.activity.result.contract.ActivityResultContracts"
-
-# Haptic
+add_import_if_missing "androidx.compose.ui.platform.LocalHapticFeedback"
 add_import_if_missing "androidx.compose.ui.hapticfeedback.HapticFeedbackType"
 
-# ═══════════════════════════════════════════════════════════════
-#  ۳. حذف کدهای شبیه‌ساز LibXray (اگر وجود داشتند)
-# ═══════════════════════════════════════════════════════════════
-
-echo "🗑️ حذف کدهای شبیه‌ساز احتمالی..."
-
-# حذف هر خطی که شبیه‌ساز LibXray را تعریف می‌کند
-if grep -q "object LibXray {" "$APP"; then
-    echo "  ⚠️ شبیه‌ساز LibXray پیدا شد — حذف می‌شود"
-    # از `object LibXray {` تا بسته‌شدن آن
-    python3 << 'PYEOF'
-import re
-with open("App.kt", "r", encoding="utf-8") as f:
-    content = f.read()
-
-# حذف object LibXray شبیه‌ساز
-pattern = r'object LibXray \{.*?\n\}\n'
-content = re.sub(pattern, '', content, count=1, flags=re.DOTALL)
-
-with open("App.kt", "w", encoding="utf-8") as f:
-    f.write(content)
-PYEOF
-fi
+echo "✅ importها اضافه شدند"
 
 # ═══════════════════════════════════════════════════════════════
-#  ۴. اضافه کردن import نهایی LibXray (اگر AAR موجود باشد)
+#  ۳. اطمینان از import LibXray
 # ═══════════════════════════════════════════════════════════════
 
-# بررسی می‌کنیم که آیا واقعاً به LibXray نیاز داریم
-if grep -q "LibXray" "$APP"; then
-    if ! grep -q "^import libXray.LibXray$" "$APP"; then
-        # اضافه کردن import در بالای فایل
+echo "🔧 بررسی import LibXray..."
+
+if grep -q "RealXrayCore\|RealPingEngine\|RealVpnService" "$APP"; then
+    if ! grep -q "^import libXray" "$APP"; then
+        # اضافه کردن import LibXray
         python3 << 'PYEOF'
 with open("App.kt", "r", encoding="utf-8") as f:
     content = f.read()
 
-# اضافه کردن import LibXray بعد از اولین import androidx یا در ابتدای package
-if "import libXray.LibXray" not in content:
-    # پیدا کردن اولین import
+if "import libXray.LibXray" not in content and "import libXray.Libv2ray" not in content:
     lines = content.split("\n")
     for i, line in enumerate(lines):
         if line.startswith("import "):
@@ -158,7 +197,7 @@ PYEOF
 fi
 
 # ═══════════════════════════════════════════════════════════════
-#  ۵. اطمینان از عدم تکراری بودن importها
+#  ۴. حذف importهای تکراری
 # ═══════════════════════════════════════════════════════════════
 
 echo "🧹 حذف importهای تکراری..."
@@ -173,7 +212,7 @@ for line in lines:
     stripped = line.strip()
     if stripped.startswith("import "):
         if stripped in seen:
-            continue  # حذف import تکراری
+            continue
         seen.add(stripped)
     output.append(line)
 
@@ -182,62 +221,25 @@ with open("App.kt", "w", encoding="utf-8") as f:
 PYEOF
 
 # ═══════════════════════════════════════════════════════════════
-#  ۶. اطمینان از اینکه AppFinal وجود دارد
+#  ۵. اطمینان از AppFinal
 # ═══════════════════════════════════════════════════════════════
 
 if ! grep -q "fun AppFinal()" "$APP"; then
-    echo "❌ تابع AppFinal در فایل نیست!"
-    exit 1
-fi
-
-echo "✅ AppFinal پیدا شد"
-
-# ═══════════════════════════════════════════════════════════════
-#  ۷. اطمینان از اینکه MainActivity از AppFinal استفاده می‌کند
-# ═══════════════════════════════════════════════════════════════
-
-echo "🔧 فیکس MainActivity..."
-
-# جایگزینی App(vm) با AppFinal()
-sed -i 's/App(vm)/AppFinal()/g' "$APP"
-
-# حذف viewModel در MainActivity اگر AppFinal استفاده می‌شود
-python3 << 'PYEOF'
-import re
-with open("App.kt", "r", encoding="utf-8") as f:
-    content = f.read()
-
-# اگر در MainActivity از AppFinal استفاده می‌شود، viewModel اضافی را حذف کن
-# الگوی: val vm: VpnViewModel = viewModel(...) ... AppFinal()
-# این کار را فقط در MainActivity انجام می‌دهیم
-
-# پیدا کردن main activity
-if "class MainActivity" in content:
-    # حذف vm در MainActivity
-    # این کار ساده است: پیدا می‌کنیم جایی که AppFinal() هست
-    # و vm را از قبلش حذف می‌کنیم اگر استفاده نمی‌شود
-    pass  # در بیشتر موارد نیازی نیست
-
-with open("App.kt", "w", encoding="utf-8") as f:
-    f.write(content)
-PYEOF
-
-# ═══════════════════════════════════════════════════════════════
-#  ۸. فیکس وضعیت Splash (اگر کد Splash وجود دارد)
-# ═══════════════════════════════════════════════════════════════
-
-echo "🔧 فیکس SplashScreen..."
-
-# مطمئن شویم showSplash تعریف شده
-if grep -q "fun AppFinal()" "$APP"; then
-    # بررسی اینکه showSplash تعریف شده
-    if ! grep -q "var showSplash" "$APP"; then
-        echo "  ⚠️ showSplash تعریف نشده — اضافه می‌کنیم"
+    echo "⚠️ تابع AppFinal در فایل نیست — از App استفاده می‌کنیم"
+    if ! grep -q "fun App(" "$APP"; then
+        echo "❌ نه AppFinal نه App — فایل ناقص است!"
+        exit 1
     fi
+else
+    echo "✅ AppFinal پیدا شد"
+    
+    # جایگزینی App(vm) با AppFinal()
+    sed -i 's/App(vm)/AppFinal()/g' "$APP"
+    echo "✅ App(vm) → AppFinal()"
 fi
 
 # ═══════════════════════════════════════════════════════════════
-#  ۹. اطمینان از وجود تمام فایل‌های پایه
+#  ۶. بررسی توابع کلیدی
 # ═══════════════════════════════════════════════════════════════
 
 echo "🔍 بررسی توابع کلیدی..."
@@ -278,25 +280,16 @@ else
 fi
 
 # ═══════════════════════════════════════════════════════════════
-#  ۱۰. اصلاح نام پکیج libXray در Reflection
-# ═══════════════════════════════════════════════════════════════
-
-echo "🔧 اصلاح Reflectionهای LibXray..."
-
-# اطمینان از اینکه reflectionها نام درست استفاده می‌کنند
-sed -i 's/Class.forName("libXray\.LibXray")/Class.forName("libXray.LibXray")/g' "$APP"
-
-# ═══════════════════════════════════════════════════════════════
-#  ۱۱. خلاصه نهایی
+#  ۷. گزارش نهایی
 # ═══════════════════════════════════════════════════════════════
 
 echo ""
 echo "═══════════════════════════════════════════════════"
 echo " ✅ فیکس کامل شد!"
 echo "═══════════════════════════════════════════════════"
-echo " 📄 حجم نهایی App.kt: $(wc -l < $APP) خط"
-echo " 📦 تعداد importها: $(grep -c '^import ' $APP)"
-echo " 🔧 تعداد فانکشن‌ها: $(grep -c '^fun ' $APP)"
+echo " 📄 فایل: $APP"
+echo " 📏 حجم: $(wc -l < $APP) خط"
+echo " 📦 تعداد import: $(grep -c '^import ' $APP)"
 echo " 🎨 تعداد Composables: $(grep -c '@Composable' $APP)"
 echo "═══════════════════════════════════════════════════"
 echo ""
