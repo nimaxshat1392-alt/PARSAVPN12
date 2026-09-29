@@ -1,14 +1,13 @@
 #!/bin/bash
 # ═══════════════════════════════════════════════════════════════
-#  fix_app.sh — فیکس خطاهای کامپایل
+#  fix_app.sh — استخراج Kotlin + افزودن importها (بدون تبدیل خرابکار)
 # ═══════════════════════════════════════════════════════════════
 
 set -e
 
 echo "═══════════════════════════════════════════════════"
-echo " 🔧 فیکس نهایی App.kt"
+echo " 🔧 فیکس App.kt"
 echo "═══════════════════════════════════════════════════"
-echo ""
 
 if [ ! -f "PARSAVPN.sh" ]; then
     echo "❌ PARSAVPN.sh پیدا نشد!"
@@ -16,10 +15,10 @@ if [ ! -f "PARSAVPN.sh" ]; then
 fi
 
 TOTAL=$(wc -l < PARSAVPN.sh)
-echo "📄 حجم فایل: $TOTAL خط"
+echo "📄 حجم فایل اصلی: $TOTAL خط"
 
 # ═══════════════════════════════════════════════════════════════
-#  ۱. استخراج Kotlin
+#  ۱. پیدا کردن محدوده Kotlin
 # ═══════════════════════════════════════════════════════════════
 
 START_LINE=$(grep -n "^package com.mlmvpn.app" PARSAVPN.sh | head -1 | cut -d: -f1)
@@ -44,77 +43,46 @@ if [ -z "$END_LINE" ]; then
     END_LINE=$TOTAL
 fi
 
+echo "🎯 پایان Kotlin: خط $END_LINE"
+
 END_BEFORE=$((END_LINE - 1))
 sed -n "${START_LINE},${END_BEFORE}p" PARSAVPN.sh > App_raw.kt
 
-echo "📦 استخراج شد: $(wc -l < App_raw.kt) خط"
+echo "📦 حجم استخراج: $(wc -l < App_raw.kt) خط"
 echo ""
 
 # ═══════════════════════════════════════════════════════════════
-#  ۲. حذف importهای اشتباه و فیکس‌های پایه
-# ═══════════════════════════════════════════════════════════════
-
-echo "🔧 حذف importهای اشتباه..."
-
-# حذف NetworkCallback اشتباه (باید ConnectivityManager.NetworkCallback باشه)
-sed -i '/^import android\.net\.NetworkCallback$/d' App_raw.kt
-sed -i '/^import android\.net\.Network$/d' App_raw.kt
-
-# ═══════════════════════════════════════════════════════════════
-#  ۳. فیکس تایپوها
+#  ۲. فیکس تایپوها (ساده و امن)
 # ═══════════════════════════════════════════════════════════════
 
 echo "🔧 فیکس تایپوها..."
 
 sed -i 's/^omposable/@Composable/g' App_raw.kt
 sed -i 's/^n App(/fun App(/g' App_raw.kt
-sed -i 's/^n \([A-Z][a-zA-Z]*\)(/fun \1(/g' App_raw.kt
 
 # ═══════════════════════════════════════════════════════════════
-#  ۴. فیکس Returns are not allowed (با Python)
+#  ۳. نمایش DEBUG — کد مشکل‌دار رو چاپ کن
 # ═══════════════════════════════════════════════════════════════
 
-echo "🔧 فیکس توابع expression-body..."
+echo ""
+echo "═════════ 🔍 DEBUG: بررسی expression body with return ═════════"
+echo ""
+echo "📋 جستجوی توابعی که expression body دارن و return داخلشون هست:"
+echo ""
 
-python3 << 'PYEOF'
-import re
+# پیدا کردن توابع با = try  یا = run  یا = withContext که بعدشون return هست
+grep -n "= try \|= run \|= withContext\|= launch\|= coroutineScope" App_raw.kt | head -30
 
-with open("App_raw.kt", "r", encoding="utf-8") as f:
-    lines = f.readlines()
+echo ""
+echo "📋 جستجوی خطوطی که فقط return دارن (نه return@):"
+grep -n "^\s*return " App_raw.kt | grep -v "return@" | head -20
 
-# پیدا کردن توابع expression body که داخلشون return هست
-# الگو: fun name(...): Type = expression
-# و expression حاوی return هست
-fixed = []
-i = 0
-while i < len(lines):
-    line = lines[i]
-    
-    # چک: آیا این خط یک تابع expression body هست؟
-    match = re.match(r'^(\s*)fun\s+\w+\s*\([^)]*\)(\s*:\s*[^=]+)?\s*=\s*(.*)$', line.rstrip())
-    
-    if match and "return" in match.group(3):
-        # این تابع نیاز به تبدیل داره
-        indent = match.group(1)
-        signature = line.split("=")[0].rstrip()
-        
-        # تبدیل به block body
-        fixed.append(signature + "{\n")
-        fixed.append(indent + "    " + match.group(3).strip() + "\n")
-        fixed.append(indent + "}\n")
-    else:
-        fixed.append(line)
-    
-    i += 1
-
-with open("App_raw.kt", "w", encoding="utf-8") as f:
-    f.writelines(fixed)
-
-print("  ✅ فیکس شد")
-PYEOF
+echo ""
+echo "═════════ END DEBUG ═════════"
+echo ""
 
 # ═══════════════════════════════════════════════════════════════
-#  ۵. اضافه کردن importها
+#  ۴. اضافه کردن importها
 # ═══════════════════════════════════════════════════════════════
 
 echo "🔧 اضافه کردن importها..."
@@ -310,7 +278,6 @@ import java.util.UUID
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger"""
 
-# پیدا کردن package
 pkg_match = re.search(r'^package\s+com\.mlmvpn\.app\s*$', content, re.MULTILINE)
 if not pkg_match:
     print("❌ package پیدا نشد")
@@ -339,11 +306,11 @@ final = re.sub(r'\n{3,}', '\n\n', final)
 with open("App.kt", "w", encoding="utf-8") as f:
     f.write(final)
 
-print("  ✅ importها اضافه شد")
+print("✅ importها اضافه شد")
 PYEOF
 
 # ═══════════════════════════════════════════════════════════════
-#  ۶. گزارش
+#  ۵. گزارش
 # ═══════════════════════════════════════════════════════════════
 
 echo ""
@@ -352,8 +319,8 @@ echo " ✅ App.kt آماده شد!"
 echo "═══════════════════════════════════════════════════"
 echo " 📏 حجم: $(wc -l < App.kt) خط"
 echo " 📦 importها: $(grep -c '^import ' App.kt)"
-echo " 🎨 Composables: $(grep -c '@Composable' App.kt)"
 echo "═══════════════════════════════════════════════════"
+echo ""
 
 rm -f App_raw.kt
 exit 0
