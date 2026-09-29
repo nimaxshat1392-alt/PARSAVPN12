@@ -1,12 +1,12 @@
 #!/bin/bash
 # ═══════════════════════════════════════════════════════════════
-#  fix_app.sh — استخراج Kotlin + افزودن importها (بدون تبدیل خرابکار)
+#  fix_app.sh — استخراج + تبدیل expression body + افزودن imports
 # ═══════════════════════════════════════════════════════════════
 
 set -e
 
 echo "═══════════════════════════════════════════════════"
-echo " 🔧 فیکس App.kt"
+echo " 🔧 فیکس نهایی App.kt"
 echo "═══════════════════════════════════════════════════"
 
 if [ ! -f "PARSAVPN.sh" ]; then
@@ -15,20 +15,17 @@ if [ ! -f "PARSAVPN.sh" ]; then
 fi
 
 TOTAL=$(wc -l < PARSAVPN.sh)
-echo "📄 حجم فایل اصلی: $TOTAL خط"
+echo "📄 حجم فایل: $TOTAL خط"
 
 # ═══════════════════════════════════════════════════════════════
-#  ۱. پیدا کردن محدوده Kotlin
+#  ۱. استخراج محدوده Kotlin
 # ═══════════════════════════════════════════════════════════════
 
 START_LINE=$(grep -n "^package com.mlmvpn.app" PARSAVPN.sh | head -1 | cut -d: -f1)
-
 if [ -z "$START_LINE" ]; then
     echo "❌ خط package پیدا نشد!"
     exit 1
 fi
-
-echo "🎯 شروع Kotlin: خط $START_LINE"
 
 END_LINE=$(awk -v start="$START_LINE" '
     NR > start {
@@ -38,48 +35,104 @@ END_LINE=$(awk -v start="$START_LINE" '
         }
     }
 ' PARSAVPN.sh)
+[ -z "$END_LINE" ] && END_LINE=$TOTAL
 
-if [ -z "$END_LINE" ]; then
-    END_LINE=$TOTAL
-fi
-
-echo "🎯 پایان Kotlin: خط $END_LINE"
-
-END_BEFORE=$((END_LINE - 1))
-sed -n "${START_LINE},${END_BEFORE}p" PARSAVPN.sh > App_raw.kt
-
-echo "📦 حجم استخراج: $(wc -l < App_raw.kt) خط"
+sed -n "${START_LINE},$((END_LINE - 1))p" PARSAVPN.sh > App_raw.kt
+echo "📦 استخراج: $(wc -l < App_raw.kt) خط"
 echo ""
 
 # ═══════════════════════════════════════════════════════════════
-#  ۲. فیکس تایپوها (ساده و امن)
+#  ۲. تبدیل expression body با return
+# ═══════════════════════════════════════════════════════════════
+
+echo "🔧 تبدیل expression body های مشکل‌دار..."
+
+python3 << 'PYEOF'
+import re
+
+with open("App_raw.kt", "r", encoding="utf-8") as f:
+    content = f.read()
+
+def find_matching_brace(text, open_pos):
+    """پیدا کردن بسته شدن براکت متناظر با شمارش دقیق"""
+    count = 1
+    i = open_pos + 1
+    while i < len(text) and count > 0:
+        c = text[i]
+        if c == '{':
+            count += 1
+        elif c == '}':
+            count -= 1
+        i += 1
+    return i - 1
+
+# الگوی تابع با expression body
+func_pattern = re.compile(
+    r'^([ \t]*)'
+    r'((?:public |private |internal |protected )?(?:override )?(?:suspend )?fun\s+\w+\s*\([^)]*\)(?:\s*:\s*[^\n=]+?)?)'
+    r'\s*=\s*(.*?)\s*\{\s*$',
+    re.MULTILINE
+)
+
+transformed = 0
+matches = list(func_pattern.finditer(content))
+
+for match in reversed(matches):
+    indent = match.group(1)
+    signature = match.group(2)
+    body_expr = match.group(3).strip()
+    
+    # پیدا کردن { درست
+    open_pos = content.rfind('{', match.start(), match.end())
+    if open_pos < 0:
+        continue
+    
+    close_pos = find_matching_brace(content, open_pos)
+    body = content[open_pos + 1:close_pos]
+    
+    # بررسی وجود return بدون @
+    body_check = re.sub(r'return@\w+', '', body)
+    if not re.search(r'\breturn(?!@)\s', body_check):
+        continue
+    
+    # استخراج label از body_expr
+    label_match = re.match(r'(\w+)', body_expr)
+    if not label_match:
+        continue
+    label = label_match.group(1)
+    
+    print("  🔧 " + signature[:70])
+    print("     label: @" + label)
+    
+    # تبدیل return به return@label
+    new_body = re.sub(r'\breturn(?!@)\s+', 'return@' + label + ' ', body)
+    
+    # ساخت تابع جدید
+    new_func = indent + signature + " {\n" + indent + "    return " + body_expr + " {" + new_body + "}\n" + indent + "}"
+    
+    # جایگزینی
+    if close_pos + 1 < len(content):
+        content = content[:match.start()] + new_func + content[close_pos + 1:]
+    else:
+        content = content[:match.start()] + new_func
+    
+    transformed += 1
+
+with open("App_raw.kt", "w", encoding="utf-8") as f:
+    f.write(content)
+
+print("✅ {} تابع تبدیل شد".format(transformed))
+PYEOF
+
+echo ""
+
+# ═══════════════════════════════════════════════════════════════
+#  ۳. فیکس تایپوها
 # ═══════════════════════════════════════════════════════════════
 
 echo "🔧 فیکس تایپوها..."
-
 sed -i 's/^omposable/@Composable/g' App_raw.kt
 sed -i 's/^n App(/fun App(/g' App_raw.kt
-
-# ═══════════════════════════════════════════════════════════════
-#  ۳. نمایش DEBUG — کد مشکل‌دار رو چاپ کن
-# ═══════════════════════════════════════════════════════════════
-
-echo ""
-echo "═════════ 🔍 DEBUG: بررسی expression body with return ═════════"
-echo ""
-echo "📋 جستجوی توابعی که expression body دارن و return داخلشون هست:"
-echo ""
-
-# پیدا کردن توابع با = try  یا = run  یا = withContext که بعدشون return هست
-grep -n "= try \|= run \|= withContext\|= launch\|= coroutineScope" App_raw.kt | head -30
-
-echo ""
-echo "📋 جستجوی خطوطی که فقط return دارن (نه return@):"
-grep -n "^\s*return " App_raw.kt | grep -v "return@" | head -20
-
-echo ""
-echo "═════════ END DEBUG ═════════"
-echo ""
 
 # ═══════════════════════════════════════════════════════════════
 #  ۴. اضافه کردن importها
@@ -310,7 +363,7 @@ print("✅ importها اضافه شد")
 PYEOF
 
 # ═══════════════════════════════════════════════════════════════
-#  ۵. گزارش
+#  ۵. گزارش نهایی
 # ═══════════════════════════════════════════════════════════════
 
 echo ""
@@ -320,7 +373,6 @@ echo "════════════════════════�
 echo " 📏 حجم: $(wc -l < App.kt) خط"
 echo " 📦 importها: $(grep -c '^import ' App.kt)"
 echo "═══════════════════════════════════════════════════"
-echo ""
 
 rm -f App_raw.kt
 exit 0
