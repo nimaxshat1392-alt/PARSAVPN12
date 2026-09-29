@@ -1,6 +1,6 @@
 #!/bin/bash
 # ═══════════════════════════════════════════════════════════════
-#  fix_app.sh — استخراج + تبدیل expression body + افزودن imports
+#  fix_app.sh — نسخه نهایی با فیکس دقیق
 # ═══════════════════════════════════════════════════════════════
 
 set -e
@@ -15,10 +15,9 @@ if [ ! -f "PARSAVPN.sh" ]; then
 fi
 
 TOTAL=$(wc -l < PARSAVPN.sh)
-echo "📄 حجم فایل: $TOTAL خط"
 
 # ═══════════════════════════════════════════════════════════════
-#  ۱. استخراج محدوده Kotlin
+#  ۱. استخراج Kotlin
 # ═══════════════════════════════════════════════════════════════
 
 START_LINE=$(grep -n "^package com.mlmvpn.app" PARSAVPN.sh | head -1 | cut -d: -f1)
@@ -28,13 +27,20 @@ if [ -z "$START_LINE" ]; then
 fi
 
 END_LINE=$(awk -v start="$START_LINE" '
-    NR > start {
-        if (/^cat > / || /^ROOT=/ || /^chmod / || /^mkdir -p / || /^X[0-9]+$/ || /^set -e/) {
-            print NR
-            exit
-        }
-    }
+    NR > start && /^KOTLIN_EOF/ { print NR; exit }
 ' PARSAVPN.sh)
+
+if [ -z "$END_LINE" ]; then
+    END_LINE=$(awk -v start="$START_LINE" '
+        NR > start {
+            if (/^cat > / || /^ROOT=/ || /^chmod / || /^mkdir -p / || /^set -e/) {
+                print NR
+                exit
+            }
+        }
+    ' PARSAVPN.sh)
+fi
+
 [ -z "$END_LINE" ] && END_LINE=$TOTAL
 
 sed -n "${START_LINE},$((END_LINE - 1))p" PARSAVPN.sh > App_raw.kt
@@ -42,10 +48,10 @@ echo "📦 استخراج: $(wc -l < App_raw.kt) خط"
 echo ""
 
 # ═══════════════════════════════════════════════════════════════
-#  ۲. تبدیل expression body با return
+#  ۲. فیکس Bare Return ها (بدون خراب کردن کد)
 # ═══════════════════════════════════════════════════════════════
 
-echo "🔧 تبدیل expression body های مشکل‌دار..."
+echo "🔧 بررسی Bare Return ها..."
 
 python3 << 'PYEOF'
 import re
@@ -53,75 +59,129 @@ import re
 with open("App_raw.kt", "r", encoding="utf-8") as f:
     content = f.read()
 
-def find_matching_brace(text, open_pos):
-    """پیدا کردن بسته شدن براکت متناظر با شمارش دقیق"""
-    count = 1
-    i = open_pos + 1
-    while i < len(text) and count > 0:
-        c = text[i]
-        if c == '{':
-            count += 1
-        elif c == '}':
-            count -= 1
-        i += 1
-    return i - 1
+lines = content.split("\n")
 
-# الگوی تابع با expression body
-func_pattern = re.compile(
-    r'^([ \t]*)'
-    r'((?:public |private |internal |protected )?(?:override )?(?:suspend )?fun\s+\w+\s*\([^)]*\)(?:\s*:\s*[^\n=]+?)?)'
-    r'\s*=\s*(.*?)\s*\{\s*$',
-    re.MULTILINE
-)
+# پیدا کردن همه توابع expression body و براکت شروعشون
+func_starts = []  # (index, indent, signature, expr_label)
 
-transformed = 0
-matches = list(func_pattern.finditer(content))
+for i, line in enumerate(lines):
+    # الگو: fun name(...): Type = expr {
+    m = re.match(
+        r'^(\s*)'
+        r'((?:public\s+|private\s+|internal\s+|protected\s+)?'
+        r'(?:override\s+)?(?:suspend\s+)?fun\s+\w+\s*\([^)]*\)\s*(?::\s*[^={]+?)?)'
+        r'\s*=\s*(\w[\w.]*)\s*(\([^)]*\))?\s*\{\s*$',
+        line
+    )
+    if m:
+        indent = m.group(1)
+        signature = m.group(2).rstrip()
+        label_func = m.group(3)  # مثلاً run, try, withContext
+        args = m.group(4) or ""
+        expr = label_func + args
+        
+        # براکت شروع رو پیدا کن
+        open_brace = line.rfind('{')
+        func_starts.append((i, indent, signature, expr, open_brace))
 
-for match in reversed(matches):
-    indent = match.group(1)
-    signature = match.group(2)
-    body_expr = match.group(3).strip()
+print("  📋 توابع expression body پیدا شده: {}".format(len(func_starts)))
+
+# برای هر تابع، بسته براکت رو پیدا کن و returnهای inside رو fix کن
+# به صورت معکوس پردازش کن که خط‌ها shift نکنن
+fixed_count = 0
+
+for (start_i, indent, signature, expr, open_brace) in reversed(func_starts):
+    # پیدا کردن بسته براکت
+    depth = 1
+    close_i = -1
+    close_col = -1
+    j = start_i
+    col = open_brace + 1
+    while j < len(lines):
+        line = lines[j]
+        while col < len(line):
+            c = line[col]
+            if c == '{':
+                depth += 1
+            elif c == '}':
+                depth -= 1
+                if depth == 0:
+                    close_i = j
+                    close_col = col
+                    break
+            col += 1
+        if close_i >= 0:
+            break
+        j += 1
+        col = 0
     
-    # پیدا کردن { درست
-    open_pos = content.rfind('{', match.start(), match.end())
-    if open_pos < 0:
+    if close_i < 0:
         continue
     
-    close_pos = find_matching_brace(content, open_pos)
-    body = content[open_pos + 1:close_pos]
+    # محتوای بین open_brace و close_i
+    # خطوط داخلی از start_i تا close_i
+    # چک برای bare return در این محدوده
+    has_bare = False
+    for k in range(start_i, close_i + 1):
+        line = lines[k]
+        # حذف return@label
+        clean = re.sub(r'return@\w+', '', line)
+        if re.search(r'\breturn\s', clean):
+            has_bare = True
+            break
     
-    # بررسی وجود return بدون @
-    body_check = re.sub(r'return@\w+', '', body)
-    if not re.search(r'\breturn(?!@)\s', body_check):
+    if not has_bare:
         continue
     
-    # استخراج label از body_expr
-    label_match = re.match(r'(\w+)', body_expr)
-    if not label_match:
-        continue
-    label = label_match.group(1)
+    # استخراج label از expr (فقط کلمه اول)
+    label_word = re.match(r'(\w+)', expr).group(1)
     
-    print("  🔧 " + signature[:70])
-    print("     label: @" + label)
+    print("  🔧 فیکس: {} → return@{}".format(signature[:60], label_word))
     
-    # تبدیل return به return@label
-    new_body = re.sub(r'\breturn(?!@)\s+', 'return@' + label + ' ', body)
+    # تبدیل توابع با تغییر replace
+    # تغییر ساختار تابع
+    # قبل: fun foo() = expr {
+    # بعد: fun foo() {
+    #          return expr {
     
-    # ساخت تابع جدید
-    new_func = indent + signature + " {\n" + indent + "    return " + body_expr + " {" + new_body + "}\n" + indent + "}"
+    # خط اول رو تغییر بده
+    original_line = lines[start_i]
+    new_first_line = indent + signature + " {"
     
-    # جایگزینی
-    if close_pos + 1 < len(content):
-        content = content[:match.start()] + new_func + content[close_pos + 1:]
-    else:
-        content = content[:match.start()] + new_func
+    # خطوط داخلی رو fix کن (از start_i+1 تا close_i-1)
+    for k in range(start_i + 1, close_i):
+        old_line = lines[k]
+        # تبدیل return به return@label
+        new_line = re.sub(r'\breturn(?!@)\s+', 'return@{} '.format(label_word), old_line)
+        lines[k] = new_line
     
-    transformed += 1
+    # خط start_i رو تغییر بده به دو خط:
+    # خط ۱: fun foo() {
+    # خط ۲:     return expr {
+    indent2 = indent + "    "
+    lines[start_i] = new_first_line + "\n" + indent2 + "return " + expr + " {"
+    
+    # خط close_i رو تغییر بده به دو خط:
+    # خط ۱:     }
+    # خط ۲: }
+    last_line = lines[close_i]
+    before_close = last_line[:close_col]
+    after_close = last_line[close_col + 1:]
+    
+    # خط جدید: قبل + } (بسته expr) + newline + indent + } (بسته تابع) + after
+    lines[close_i] = before_close + "    }\n" + indent + "}" + after_close
+    
+    fixed_count += 1
 
-with open("App_raw.kt", "w", encoding="utf-8") as f:
+content = "\n".join(lines)
+
+# پاک‌سازی
+content = re.sub(r'\n{3,}', '\n\n', content)
+
+with open("App.kt", "w", encoding="utf-8") as f:
     f.write(content)
 
-print("✅ {} تابع تبدیل شد".format(transformed))
+print("  ✅ {} تابع فیکس شد".format(fixed_count))
 PYEOF
 
 echo ""
@@ -131,8 +191,9 @@ echo ""
 # ═══════════════════════════════════════════════════════════════
 
 echo "🔧 فیکس تایپوها..."
-sed -i 's/^omposable/@Composable/g' App_raw.kt
-sed -i 's/^n App(/fun App(/g' App_raw.kt
+
+sed -i 's/^omposable/@Composable/g' App.kt
+sed -i 's/^n App(/fun App(/g' App.kt
 
 # ═══════════════════════════════════════════════════════════════
 #  ۴. اضافه کردن importها
@@ -143,7 +204,7 @@ echo "🔧 اضافه کردن importها..."
 python3 << 'PYEOF'
 import re
 
-with open("App_raw.kt", "r", encoding="utf-8") as f:
+with open("App.kt", "r", encoding="utf-8") as f:
     content = f.read()
 
 IMPORTS = """import android.app.Notification
@@ -373,6 +434,13 @@ echo "════════════════════════�
 echo " 📏 حجم: $(wc -l < App.kt) خط"
 echo " 📦 importها: $(grep -c '^import ' App.kt)"
 echo "═══════════════════════════════════════════════════"
+
+# بررسی bare returnهای باقی‌مانده
+echo ""
+echo "🔍 بررسی Bare Returnهای باقی‌مانده..."
+grep -n "^\s*return\s" App.kt | grep -v "return@" | head -20 || echo "  ✅ هیچ bare return باقی نمانده"
+
+echo ""
 
 rm -f App_raw.kt
 exit 0
