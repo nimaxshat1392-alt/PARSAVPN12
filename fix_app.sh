@@ -2,7 +2,7 @@
 set -e
 
 echo "═══════════════════════════════════════════════════"
-echo " 🔧 فیکس نهایی (ساده و مطمئن)"
+echo " 🔧 فیکس قطعی App.kt"
 echo "═══════════════════════════════════════════════════"
 
 if [ ! -f "PARSAVPN.sh" ]; then
@@ -10,136 +10,171 @@ if [ ! -f "PARSAVPN.sh" ]; then
     exit 1
 fi
 
-# ═══ ۱. استخراج Kotlin ═══
-START_LINE=$(grep -n "^package com.mlmvpn.app" PARSAVPN.sh | head -1 | cut -d: -f1)
-if [ -z "$START_LINE" ]; then
-    echo "❌ package پیدا نشد!"
+# ═══ استخراج ═══
+START=$(grep -n "^package com.mlmvpn.app" PARSAVPN.sh | head -1 | cut -d: -f1)
+if [ -z "$START" ]; then
+    echo "❌ package پیدا نشد"
     exit 1
 fi
 
-END_LINE=$(awk -v start="$START_LINE" 'NR > start && /^KOTLIN_EOF/ {print NR; exit}' PARSAVPN.sh)
-if [ -z "$END_LINE" ]; then
-    END_LINE=$(wc -l < PARSAVPN.sh)
+END=$(awk -v s="$START" 'NR > s && /^KOTLIN_EOF/ {print NR; exit}' PARSAVPN.sh)
+if [ -z "$END" ]; then
+    END=$(wc -l < PARSAVPN.sh)
 fi
 
-sed -n "${START_LINE},$((END_LINE - 1))p" PARSAVPN.sh > App_raw.kt
+sed -n "${START},$((END-1))p" PARSAVPN.sh > App_raw.kt
 echo "📦 استخراج: $(wc -l < App_raw.kt) خط"
+echo ""
 
-# ═══ ۲. تبدیل فقط توابع "= try {" ═══
+# ═══ تبدیل توابع = try { ═══
 python3 << 'PYEOF'
 import re
 
 with open("App_raw.kt") as f:
     content = f.read()
 
-def find_matching_close(text, open_pos):
-    """پیدا کردن بسته‌ی متناظر با شمارش عمیق"""
-    depth = 1
-    i = open_pos + 1
-    in_str = False
-    in_char = False
-    in_comment = False
-    in_line_comment = False
-    while i < len(text):
+def find_close_brace(text, open_pos):
+    """پیدا کردن بسته براکت با شمارش دقیق (نادیده گرفتن string/comment)"""
+    depth = 0
+    i = open_pos
+    n = len(text)
+    while i < n:
         c = text[i]
-        prev = text[i-1] if i > 0 else ''
-        nxt = text[i+1] if i+1 < len(text) else ''
-        
-        if in_line_comment:
-            if c == '\n':
-                in_line_comment = False
-        elif in_comment:
-            if c == '*' and nxt == '/':
-                in_comment = False
+        # String با سه کوتیشن
+        if c == '"' and i+2 < n and text[i:i+3] == '"""':
+            i += 3
+            while i+2 < n and text[i:i+3] != '"""':
                 i += 1
-        elif in_str:
-            if c == '\\':
+            i += 3
+            continue
+        # String معمولی
+        if c == '"':
+            i += 1
+            while i < n and text[i] != '"':
+                if text[i] == '\\':
+                    i += 1
                 i += 1
-            elif c == '"':
-                in_str = False
-        elif in_char:
-            if c == '\\':
+            i += 1
+            continue
+        # Char
+        if c == "'":
+            i += 1
+            while i < n and text[i] != "'":
+                if text[i] == '\\':
+                    i += 1
                 i += 1
-            elif c == "'":
-                in_char = False
-        else:
-            if c == '/' and nxt == '/':
-                in_line_comment = True
+            i += 1
+            continue
+        # Line comment
+        if c == '/' and i+1 < n and text[i+1] == '/':
+            while i < n and text[i] != '\n':
                 i += 1
-            elif c == '/' and nxt == '*':
-                in_comment = True
+            continue
+        # Block comment
+        if c == '/' and i+1 < n and text[i+1] == '*':
+            i += 2
+            while i+1 < n and not (text[i] == '*' and text[i+1] == '/'):
                 i += 1
-            elif c == '"':
-                in_str = True
-            elif c == "'":
-                in_char = True
-            elif c == '{':
-                depth += 1
-            elif c == '}':
-                depth -= 1
-                if depth == 0:
-                    return i
+            i += 2
+            continue
+        # Brace counting
+        if c == '{':
+            depth += 1
+        elif c == '}':
+            depth -= 1
+            if depth == 0:
+                return i
         i += 1
     return -1
 
-# الگو: تابع با expression body "= try {"  فقط
+# پیدا کردن توابع "fun ... = try {"
 pattern = re.compile(
-    r'^(\s*)'                                   # indent
+    r'(?m)^([ \t]*)'
     r'((?:(?:public|private|internal|protected)\s+)?'
     r'(?:override\s+)?(?:suspend\s+)?fun\s+\w+\s*\([^)]*\)\s*'
-    r'(?::\s*[^={]+?)?)'                        # signature
-    r'\s*=\s*try\s*\{',                         # = try {
-    re.MULTILINE
+    r'(?::\s*[^={\n]+?)?)'
+    r'\s*=\s*try\s*\{'
 )
 
-# از انتها به ابتدا پردازش کن که ایندکس‌ها جابجا نشه
 matches = list(pattern.finditer(content))
 print("📋 " + str(len(matches)) + " تابع با '= try {' پیدا شد")
+print("")
 
+# از انتها به ابتدا پردازش کن (چون ایندکس‌ها جابجا می‌شن)
 for m in reversed(matches):
-    sig_end = m.end() - 1  # موقعیت '{' شروع
-    close_pos = find_matching_close(content, sig_end)
-    
-    if close_pos < 0:
-        print("  ⚠️ نتونستم بسته رو پیدا کنم")
-        continue
-    
     indent = m.group(1)
     signature = m.group(2).rstrip()
+    open_brace = m.end() - 1  # موقعیت { در "= try {"
     
-    # محتوای داخلی try
-    inner = content[sig_end + 1:close_pos]
+    # پیدا کردن بسته try
+    try_close = find_close_brace(content, open_brace)
+    if try_close < 0:
+        print("  ⚠️ نتونستم بسته try رو پیدا کنم")
+        continue
     
-    # ساختار جدید:
+    # بررسی catch/finally بعدش
+    cursor = try_close + 1
+    while cursor < len(content) and content[cursor] in ' \t\n\r':
+        cursor += 1
+    
+    # اگه catch/finally هست
+    while cursor < len(content):
+        rest = content[cursor:cursor+20]
+        if rest.startswith('catch') or rest.startswith('finally'):
+            # پیدا کردن { بعدی
+            brace = content.find('{', cursor)
+            if brace < 0:
+                break
+            brace_close = find_close_brace(content, brace)
+            if brace_close < 0:
+                break
+            try_close = brace_close
+            cursor = brace_close + 1
+            while cursor < len(content) and content[cursor] in ' \t\n\r':
+                cursor += 1
+        else:
+            break
+    
+    # حالا محدوده کامل try-catch-finally مشخص است
+    # try_start: از موقعیت 't' در try شروع می‌شه
+    try_start = m.end() - 4  # موقعیت t در try (بعد از "= ")
+    # دوباره چک کن
+    if content[try_start:try_start+3] != 'try':
+        try_start = m.end() - 4
+        for offset in range(1, 10):
+            if content[m.end()-offset:m.end()-offset+3] == 'try':
+                try_start = m.end() - offset
+                break
+    
+    inner_expr = content[try_start:try_close+1]
+    
+    # ساخت تابع جدید:
     # fun foo(): Type {
-    #     return try {
-    #         ...inner...
-    #     }
+    #     return try { ... } catch { ... }
     # }
-    
     new_func = (
-        indent + signature + " {\n" +
-        indent + "    return try {" +
-        inner +
-        "}\n" +
-        indent + "}"
+        indent + signature + " {\n"
+        + indent + "    return " + inner_expr + "\n"
+        + indent + "}"
     )
     
     # جایگزینی
-    content = content[:m.start()] + new_func + content[close_pos + 1:]
-    print("  ✓ " + signature[:60])
+    content = content[:m.start()] + new_func + content[try_close+1:]
+    
+    print("  ✓ " + signature[:65])
 
 with open("App_raw.kt", "w") as f:
     f.write(content)
 
+print("")
 print("✅ تبدیل کامل شد")
 PYEOF
 
-# ═══ ۳. فیکس تایپوها ═══
+# ═══ فیکس تایپوها ═══
 sed -i 's/^omposable/@Composable/g' App_raw.kt
 sed -i 's/^n App(/fun App(/g' App_raw.kt
 
-# ═══ ۴. اضافه کردن importها ═══
+# ═══ اضافه کردن importها ═══
 python3 << 'PYEOF'
 import re
 with open("App_raw.kt") as f:
@@ -330,29 +365,28 @@ import java.util.UUID
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger"""
 
-pkg_match = re.search(r'^package\s+com\.mlmvpn\.app\s*$', content, re.MULTILINE)
-if not pkg_match:
+pkg = re.search(r'^package\s+com\.mlmvpn\.app\s*$', content, re.MULTILINE)
+if not pkg:
     print("❌ package پیدا نشد")
     exit(1)
 
 lines = content.split("\n")
-new_lines = []
-found_pkg = False
-
+out = []
+done = False
 for line in lines:
-    stripped = line.strip()
-    if stripped.startswith("package "):
-        found_pkg = True
-        new_lines.append(line)
-        new_lines.append("")
-        new_lines.append(IMPORTS)
-        new_lines.append("")
+    s = line.strip()
+    if s.startswith("package "):
+        out.append(line)
+        out.append("")
+        out.append(IMPORTS)
+        out.append("")
+        done = True
         continue
-    if found_pkg and stripped.startswith("import "):
+    if done and s.startswith("import "):
         continue
-    new_lines.append(line)
+    out.append(line)
 
-final = "\n".join(new_lines)
+final = "\n".join(out)
 final = re.sub(r'\n{3,}', '\n\n', final)
 
 with open("App.kt", "w") as f:
@@ -369,5 +403,6 @@ echo " 📏 حجم: $(wc -l < App.kt) خط"
 echo " 📦 import: $(grep -c '^import ' App.kt)"
 echo "═══════════════════════════════════════════════════"
 
+# حذف فایل‌های موقت
 rm -f App_raw.kt
 exit 0
