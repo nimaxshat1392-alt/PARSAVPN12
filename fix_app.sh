@@ -2,7 +2,7 @@
 set -e
 
 echo "═══════════════════════════════════════════════════"
-echo " 🔧 فیکس قطعی App.kt"
+echo " 🔧 فیکس ساده و مطمئن App.kt"
 echo "═══════════════════════════════════════════════════"
 
 if [ ! -f "PARSAVPN.sh" ]; then
@@ -10,7 +10,7 @@ if [ ! -f "PARSAVPN.sh" ]; then
     exit 1
 fi
 
-# ═══ استخراج ═══
+# ═══ ۱. استخراج Kotlin بدون هیچ تبدیلی ═══
 START=$(grep -n "^package com.mlmvpn.app" PARSAVPN.sh | head -1 | cut -d: -f1)
 if [ -z "$START" ]; then
     echo "❌ package پیدا نشد"
@@ -26,157 +26,28 @@ sed -n "${START},$((END-1))p" PARSAVPN.sh > App_raw.kt
 echo "📦 استخراج: $(wc -l < App_raw.kt) خط"
 echo ""
 
-# ═══ تبدیل توابع = try { ═══
-python3 << 'PYEOF'
-import re
+# ═══ ۲. فیکس‌های ساده (فقط ۳ مورد) ═══
+echo "🔧 فیکس‌های ساده..."
 
-with open("App_raw.kt") as f:
-    content = f.read()
-
-def find_close_brace(text, open_pos):
-    """پیدا کردن بسته براکت با شمارش دقیق (نادیده گرفتن string/comment)"""
-    depth = 0
-    i = open_pos
-    n = len(text)
-    while i < n:
-        c = text[i]
-        # String با سه کوتیشن
-        if c == '"' and i+2 < n and text[i:i+3] == '"""':
-            i += 3
-            while i+2 < n and text[i:i+3] != '"""':
-                i += 1
-            i += 3
-            continue
-        # String معمولی
-        if c == '"':
-            i += 1
-            while i < n and text[i] != '"':
-                if text[i] == '\\':
-                    i += 1
-                i += 1
-            i += 1
-            continue
-        # Char
-        if c == "'":
-            i += 1
-            while i < n and text[i] != "'":
-                if text[i] == '\\':
-                    i += 1
-                i += 1
-            i += 1
-            continue
-        # Line comment
-        if c == '/' and i+1 < n and text[i+1] == '/':
-            while i < n and text[i] != '\n':
-                i += 1
-            continue
-        # Block comment
-        if c == '/' and i+1 < n and text[i+1] == '*':
-            i += 2
-            while i+1 < n and not (text[i] == '*' and text[i+1] == '/'):
-                i += 1
-            i += 2
-            continue
-        # Brace counting
-        if c == '{':
-            depth += 1
-        elif c == '}':
-            depth -= 1
-            if depth == 0:
-                return i
-        i += 1
-    return -1
-
-# پیدا کردن توابع "fun ... = try {"
-pattern = re.compile(
-    r'(?m)^([ \t]*)'
-    r'((?:(?:public|private|internal|protected)\s+)?'
-    r'(?:override\s+)?(?:suspend\s+)?fun\s+\w+\s*\([^)]*\)\s*'
-    r'(?::\s*[^={\n]+?)?)'
-    r'\s*=\s*try\s*\{'
-)
-
-matches = list(pattern.finditer(content))
-print("📋 " + str(len(matches)) + " تابع با '= try {' پیدا شد")
-print("")
-
-# از انتها به ابتدا پردازش کن (چون ایندکس‌ها جابجا می‌شن)
-for m in reversed(matches):
-    indent = m.group(1)
-    signature = m.group(2).rstrip()
-    open_brace = m.end() - 1  # موقعیت { در "= try {"
-    
-    # پیدا کردن بسته try
-    try_close = find_close_brace(content, open_brace)
-    if try_close < 0:
-        print("  ⚠️ نتونستم بسته try رو پیدا کنم")
-        continue
-    
-    # بررسی catch/finally بعدش
-    cursor = try_close + 1
-    while cursor < len(content) and content[cursor] in ' \t\n\r':
-        cursor += 1
-    
-    # اگه catch/finally هست
-    while cursor < len(content):
-        rest = content[cursor:cursor+20]
-        if rest.startswith('catch') or rest.startswith('finally'):
-            # پیدا کردن { بعدی
-            brace = content.find('{', cursor)
-            if brace < 0:
-                break
-            brace_close = find_close_brace(content, brace)
-            if brace_close < 0:
-                break
-            try_close = brace_close
-            cursor = brace_close + 1
-            while cursor < len(content) and content[cursor] in ' \t\n\r':
-                cursor += 1
-        else:
-            break
-    
-    # حالا محدوده کامل try-catch-finally مشخص است
-    # try_start: از موقعیت 't' در try شروع می‌شه
-    try_start = m.end() - 4  # موقعیت t در try (بعد از "= ")
-    # دوباره چک کن
-    if content[try_start:try_start+3] != 'try':
-        try_start = m.end() - 4
-        for offset in range(1, 10):
-            if content[m.end()-offset:m.end()-offset+3] == 'try':
-                try_start = m.end() - offset
-                break
-    
-    inner_expr = content[try_start:try_close+1]
-    
-    # ساخت تابع جدید:
-    # fun foo(): Type {
-    #     return try { ... } catch { ... }
-    # }
-    new_func = (
-        indent + signature + " {\n"
-        + indent + "    return " + inner_expr + "\n"
-        + indent + "}"
-    )
-    
-    # جایگزینی
-    content = content[:m.start()] + new_func + content[try_close+1:]
-    
-    print("  ✓ " + signature[:65])
-
-with open("App_raw.kt", "w") as f:
-    f.write(content)
-
-print("")
-print("✅ تبدیل کامل شد")
-PYEOF
-
-# ═══ فیکس تایپوها ═══
+# ۱. تایپو @Composable
 sed -i 's/^omposable/@Composable/g' App_raw.kt
+
+# ۲. تایپو fun
 sed -i 's/^n App(/fun App(/g' App_raw.kt
 
-# ═══ اضافه کردن importها ═══
+# ۳. مشکل اصلی: return null در expression body → null
+#    (این تنها bare return در تابع parse بود)
+sed -i 's/else -> return null/else -> null/g' App_raw.kt
+
+echo "  ✓ فیکس شد"
+echo ""
+
+# ═══ ۳. اضافه کردن importها (فقط یک بار) ═══
+echo "🔧 اضافه کردن importها..."
+
 python3 << 'PYEOF'
 import re
+
 with open("App_raw.kt") as f:
     content = f.read()
 
@@ -365,25 +236,32 @@ import java.util.UUID
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger"""
 
+# پیدا کردن package
 pkg = re.search(r'^package\s+com\.mlmvpn\.app\s*$', content, re.MULTILINE)
 if not pkg:
     print("❌ package پیدا نشد")
     exit(1)
 
+# جایگزینی: package + imports، حذف importهای قدیمی
 lines = content.split("\n")
 out = []
-done = False
+found_pkg = False
+
 for line in lines:
     s = line.strip()
-    if s.startswith("package "):
+    
+    if s.startswith("package ") and not found_pkg:
         out.append(line)
         out.append("")
         out.append(IMPORTS)
         out.append("")
-        done = True
+        found_pkg = True
         continue
-    if done and s.startswith("import "):
+    
+    # حذف importهای قدیمی
+    if found_pkg and s.startswith("import "):
         continue
+    
     out.append(line)
 
 final = "\n".join(out)
@@ -392,17 +270,35 @@ final = re.sub(r'\n{3,}', '\n\n', final)
 with open("App.kt", "w") as f:
     f.write(final)
 
-print("✅ importها اضافه شد")
+print("  ✓ importها اضافه شد")
 PYEOF
 
+# ═══ ۴. جایگزینی App(vm) با AppFinal() ═══
+if grep -q "fun AppFinal()" App.kt; then
+    sed -i 's/App(vm)/AppFinal()/g' App.kt
+    echo "🔧 App(vm) → AppFinal()"
+fi
+
+# ═══ ۵. گزارش نهایی ═══
 echo ""
 echo "═══════════════════════════════════════════════════"
 echo " ✅ App.kt آماده شد!"
 echo "═══════════════════════════════════════════════════"
 echo " 📏 حجم: $(wc -l < App.kt) خط"
 echo " 📦 import: $(grep -c '^import ' App.kt)"
+echo " 🎨 Composables: $(grep -c '@Composable' App.kt)"
 echo "═══════════════════════════════════════════════════"
 
-# حذف فایل‌های موقت
+# چک bare returnها
+echo ""
+echo "🔍 بررسی Bare Returnها..."
+BARE=$(grep -nE "^\s*return\s" App.kt | grep -v "return@" | head -10 || true)
+if [ -z "$BARE" ]; then
+    echo "  ✅ هیچ bare return باقی نمانده"
+else
+    echo "  ⚠️ یافت شد:"
+    echo "$BARE"
+fi
+
 rm -f App_raw.kt
 exit 0
