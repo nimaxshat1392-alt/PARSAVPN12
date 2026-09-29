@@ -1,43 +1,35 @@
 #!/bin/bash
 # ═══════════════════════════════════════════════════════════════
-#  fix_app.sh — استخراج کد Kotlin با awk (تضمینی)
+#  fix_app.sh — فیکس خطاهای کامپایل
 # ═══════════════════════════════════════════════════════════════
 
 set -e
 
 echo "═══════════════════════════════════════════════════"
-echo " 🔧 استخراج کد Kotlin از PARSAVPN.sh"
+echo " 🔧 فیکس نهایی App.kt"
 echo "═══════════════════════════════════════════════════"
+echo ""
 
 if [ ! -f "PARSAVPN.sh" ]; then
     echo "❌ PARSAVPN.sh پیدا نشد!"
-    ls -la
     exit 1
 fi
 
 TOTAL=$(wc -l < PARSAVPN.sh)
 echo "📄 حجم فایل: $TOTAL خط"
-echo ""
 
 # ═══════════════════════════════════════════════════════════════
-#  ۱. پیدا کردن خط package (شروع Kotlin)
+#  ۱. استخراج Kotlin
 # ═══════════════════════════════════════════════════════════════
 
 START_LINE=$(grep -n "^package com.mlmvpn.app" PARSAVPN.sh | head -1 | cut -d: -f1)
 
 if [ -z "$START_LINE" ]; then
     echo "❌ خط package پیدا نشد!"
-    echo ""
-    echo "📋 ۲۰ خط اول فایل:"
-    head -20 PARSAVPN.sh
     exit 1
 fi
 
 echo "🎯 شروع Kotlin: خط $START_LINE"
-
-# ═══════════════════════════════════════════════════════════════
-#  ۲. پیدا کردن خط پایان Kotlin (اولین cat > یا ROOT= بعد از package)
-# ═══════════════════════════════════════════════════════════════
 
 END_LINE=$(awk -v start="$START_LINE" '
     NR > start {
@@ -50,36 +42,82 @@ END_LINE=$(awk -v start="$START_LINE" '
 
 if [ -z "$END_LINE" ]; then
     END_LINE=$TOTAL
-    echo "⚠️ خط پایان پیدا نشد — تا آخر فایل گرفته می‌شود"
-else
-    echo "🎯 پایان Kotlin: خط $END_LINE"
 fi
 
-# ═══════════════════════════════════════════════════════════════
-#  ۳. برش خطوط Kotlin
-# ═══════════════════════════════════════════════════════════════
-
 END_BEFORE=$((END_LINE - 1))
-
-# برش با sed
 sed -n "${START_LINE},${END_BEFORE}p" PARSAVPN.sh > App_raw.kt
 
-LINES=$(wc -l < App_raw.kt)
-echo "📦 خطوط استخراج‌شده: $LINES"
+echo "📦 استخراج شد: $(wc -l < App_raw.kt) خط"
 echo ""
 
 # ═══════════════════════════════════════════════════════════════
-#  ۴. فیکس‌های سریع
+#  ۲. حذف importهای اشتباه و فیکس‌های پایه
 # ═══════════════════════════════════════════════════════════════
 
-# فیکس تایپوها
+echo "🔧 حذف importهای اشتباه..."
+
+# حذف NetworkCallback اشتباه (باید ConnectivityManager.NetworkCallback باشه)
+sed -i '/^import android\.net\.NetworkCallback$/d' App_raw.kt
+sed -i '/^import android\.net\.Network$/d' App_raw.kt
+
+# ═══════════════════════════════════════════════════════════════
+#  ۳. فیکس تایپوها
+# ═══════════════════════════════════════════════════════════════
+
+echo "🔧 فیکس تایپوها..."
+
 sed -i 's/^omposable/@Composable/g' App_raw.kt
 sed -i 's/^n App(/fun App(/g' App_raw.kt
 sed -i 's/^n \([A-Z][a-zA-Z]*\)(/fun \1(/g' App_raw.kt
 
 # ═══════════════════════════════════════════════════════════════
+#  ۴. فیکس Returns are not allowed (با Python)
+# ═══════════════════════════════════════════════════════════════
+
+echo "🔧 فیکس توابع expression-body..."
+
+python3 << 'PYEOF'
+import re
+
+with open("App_raw.kt", "r", encoding="utf-8") as f:
+    lines = f.readlines()
+
+# پیدا کردن توابع expression body که داخلشون return هست
+# الگو: fun name(...): Type = expression
+# و expression حاوی return هست
+fixed = []
+i = 0
+while i < len(lines):
+    line = lines[i]
+    
+    # چک: آیا این خط یک تابع expression body هست؟
+    match = re.match(r'^(\s*)fun\s+\w+\s*\([^)]*\)(\s*:\s*[^=]+)?\s*=\s*(.*)$', line.rstrip())
+    
+    if match and "return" in match.group(3):
+        # این تابع نیاز به تبدیل داره
+        indent = match.group(1)
+        signature = line.split("=")[0].rstrip()
+        
+        # تبدیل به block body
+        fixed.append(signature + "{\n")
+        fixed.append(indent + "    " + match.group(3).strip() + "\n")
+        fixed.append(indent + "}\n")
+    else:
+        fixed.append(line)
+    
+    i += 1
+
+with open("App_raw.kt", "w", encoding="utf-8") as f:
+    f.writelines(fixed)
+
+print("  ✅ فیکس شد")
+PYEOF
+
+# ═══════════════════════════════════════════════════════════════
 #  ۵. اضافه کردن importها
 # ═══════════════════════════════════════════════════════════════
+
+echo "🔧 اضافه کردن importها..."
 
 python3 << 'PYEOF'
 import re
@@ -87,9 +125,7 @@ import re
 with open("App_raw.kt", "r", encoding="utf-8") as f:
     content = f.read()
 
-# ═══ همه importها ═══
-IMPORTS = """import android.app.Activity
-import android.app.Notification
+IMPORTS = """import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
@@ -103,15 +139,11 @@ import android.content.SharedPreferences
 import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.net.ConnectivityManager
-import android.net.Network
-import android.net.NetworkCallback
 import android.net.TrafficStats
-import android.net.Uri
 import android.net.VpnService
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
-import android.os.IBinder
 import android.os.Looper
 import android.os.ParcelFileDescriptor
 import android.os.VibrationEffect
@@ -131,7 +163,6 @@ import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.Spring
-import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
@@ -144,7 +175,6 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
-import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -273,8 +303,6 @@ import com.google.gson.JsonArray
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import com.google.gson.reflect.TypeToken
-import okhttp3.OkHttpClient
-import okhttp3.Request
 import java.net.InetSocketAddress
 import java.net.URI
 import java.net.URLDecoder
@@ -282,13 +310,12 @@ import java.util.UUID
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger"""
 
-# ═══ پیدا کردن package line ═══
+# پیدا کردن package
 pkg_match = re.search(r'^package\s+com\.mlmvpn\.app\s*$', content, re.MULTILINE)
 if not pkg_match:
-    print("❌ خط package پیدا نشد")
+    print("❌ package پیدا نشد")
     exit(1)
 
-# ═══ حذف importهای قدیمی ═══
 lines = content.split("\n")
 new_lines = []
 found_pkg = False
@@ -302,31 +329,22 @@ for line in lines:
         new_lines.append(IMPORTS)
         new_lines.append("")
         continue
-    # حذف importهای قدیمی که بعد از package اومدن
     if found_pkg and stripped.startswith("import "):
         continue
     new_lines.append(line)
 
 final = "\n".join(new_lines)
-
-# ═══ پاک‌سازی ═══
 final = re.sub(r'\n{3,}', '\n\n', final)
 
 with open("App.kt", "w", encoding="utf-8") as f:
     f.write(final)
 
-print("✅ importها اضافه شدند")
-print("📏 حجم نهایی: {} خط".format(len(final.splitlines())))
+print("  ✅ importها اضافه شد")
 PYEOF
 
 # ═══════════════════════════════════════════════════════════════
 #  ۶. گزارش
 # ═══════════════════════════════════════════════════════════════
-
-if [ ! -f "App.kt" ]; then
-    echo "❌ App.kt ساخته نشد!"
-    exit 1
-fi
 
 echo ""
 echo "═══════════════════════════════════════════════════"
@@ -335,16 +353,7 @@ echo "════════════════════════�
 echo " 📏 حجم: $(wc -l < App.kt) خط"
 echo " 📦 importها: $(grep -c '^import ' App.kt)"
 echo " 🎨 Composables: $(grep -c '@Composable' App.kt)"
-echo " 🏛️ کلاس‌ها: $(grep -cE '^(class|object|data class|enum class)' App.kt)"
-echo " 🎯 توابع: $(grep -c '^fun ' App.kt)"
 echo "═══════════════════════════════════════════════════"
-echo ""
-echo "📋 ۵ خط اول:"
-head -5 App.kt
-echo ""
-echo "📋 ۵ خط آخر:"
-tail -5 App.kt
-echo ""
 
 rm -f App_raw.kt
 exit 0
