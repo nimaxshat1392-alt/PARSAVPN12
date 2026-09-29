@@ -2,7 +2,7 @@
 set -e
 
 echo "═══════════════════════════════════════════════════"
-echo " 🔧 فیکس نهایی App.kt"
+echo " 🔧 فیکس نهایی (ساده و مطمئن)"
 echo "═══════════════════════════════════════════════════"
 
 if [ ! -f "PARSAVPN.sh" ]; then
@@ -24,121 +24,125 @@ fi
 
 sed -n "${START_LINE},$((END_LINE - 1))p" PARSAVPN.sh > App_raw.kt
 echo "📦 استخراج: $(wc -l < App_raw.kt) خط"
-echo ""
 
-# ═══ ۲. تبدیل توابع expression body با bare return ═══
-echo "🔧 تبدیل توابع مشکل‌دار..."
-
+# ═══ ۲. تبدیل فقط توابع "= try {" ═══
 python3 << 'PYEOF'
 import re
 
-with open("App_raw.kt", "r") as f:
-    lines = f.readlines()
+with open("App_raw.kt") as f:
+    content = f.read()
 
-def find_close_brace(lines, start_i, open_col):
-    """پیدا کردن خط و ستون براکت بسته متناظر"""
+def find_matching_close(text, open_pos):
+    """پیدا کردن بسته‌ی متناظر با شمارش عمیق"""
     depth = 1
-    j = start_i
-    col = open_col + 1
-    while j < len(lines):
-        line = lines[j]
-        while col < len(line):
-            c = line[col]
-            if c == '{':
+    i = open_pos + 1
+    in_str = False
+    in_char = False
+    in_comment = False
+    in_line_comment = False
+    while i < len(text):
+        c = text[i]
+        prev = text[i-1] if i > 0 else ''
+        nxt = text[i+1] if i+1 < len(text) else ''
+        
+        if in_line_comment:
+            if c == '\n':
+                in_line_comment = False
+        elif in_comment:
+            if c == '*' and nxt == '/':
+                in_comment = False
+                i += 1
+        elif in_str:
+            if c == '\\':
+                i += 1
+            elif c == '"':
+                in_str = False
+        elif in_char:
+            if c == '\\':
+                i += 1
+            elif c == "'":
+                in_char = False
+        else:
+            if c == '/' and nxt == '/':
+                in_line_comment = True
+                i += 1
+            elif c == '/' and nxt == '*':
+                in_comment = True
+                i += 1
+            elif c == '"':
+                in_str = True
+            elif c == "'":
+                in_char = True
+            elif c == '{':
                 depth += 1
             elif c == '}':
                 depth -= 1
                 if depth == 0:
-                    return (j, col)
-            col += 1
-        j += 1
-        col = 0
-    return (-1, -1)
+                    return i
+        i += 1
+    return -1
 
+# الگو: تابع با expression body "= try {"  فقط
 pattern = re.compile(
-    r'^(\s*)'
+    r'^(\s*)'                                   # indent
     r'((?:(?:public|private|internal|protected)\s+)?'
-    r'(?:override\s+)?(?:suspend\s+)?fun\s+\w+\s*\([^)]*\)\s*(?::\s*[^=]+?)?)'
-    r'\s*=\s*'
-    r'(\w+)'
-    r'(\([^)]*\))?'
-    r'\s*\{\s*$'
+    r'(?:override\s+)?(?:suspend\s+)?fun\s+\w+\s*\([^)]*\)\s*'
+    r'(?::\s*[^={]+?)?)'                        # signature
+    r'\s*=\s*try\s*\{',                         # = try {
+    re.MULTILINE
 )
 
-count = 0
-i = 0
-while i < len(lines):
-    line = lines[i]
-    m = pattern.match(line)
-    if not m:
-        i += 1
+# از انتها به ابتدا پردازش کن که ایندکس‌ها جابجا نشه
+matches = list(pattern.finditer(content))
+print("📋 " + str(len(matches)) + " تابع با '= try {' پیدا شد")
+
+for m in reversed(matches):
+    sig_end = m.end() - 1  # موقعیت '{' شروع
+    close_pos = find_matching_close(content, sig_end)
+    
+    if close_pos < 0:
+        print("  ⚠️ نتونستم بسته رو پیدا کنم")
         continue
     
     indent = m.group(1)
     signature = m.group(2).rstrip()
-    label = m.group(3)
-    args = m.group(4) or ""
     
-    open_col = line.rfind('{')
-    close_i, close_col = find_close_brace(lines, i, open_col)
-    if close_i < 0:
-        i += 1
-        continue
+    # محتوای داخلی try
+    inner = content[sig_end + 1:close_pos]
     
-    # چک برای bare return (بدون @)
-    has_bare = False
-    for k in range(i, close_i + 1):
-        # حذف return@X
-        cleaned = re.sub(r'return@\w+', '', lines[k])
-        # جستجوی return (فقط یک فاصله بعدش)
-        if re.search(r'\breturn\s', cleaned):
-            has_bare = True
-            break
+    # ساختار جدید:
+    # fun foo(): Type {
+    #     return try {
+    #         ...inner...
+    #     }
+    # }
     
-    if not has_bare:
-        i += 1
-        continue
+    new_func = (
+        indent + signature + " {\n" +
+        indent + "    return try {" +
+        inner +
+        "}\n" +
+        indent + "}"
+    )
     
-    # ✅ تبدیل با در نظر گرفتن try
-    if label in ('try', 'catch', 'finally'):
-        # try/catch lambda نیست — bare return نگه دار
-        new_first = indent + signature + " {\n" + indent + "    return " + label + args + " {\n"
-        lines[i] = new_first
-        # اضافه کردن } بسته‌ی تابع در انتها
-        close_line = lines[close_i]
-        lines[close_i] = close_line[:close_col] + "    }\n" + indent + "}" + close_line[close_col + 1:]
-    else:
-        # Lambda — تبدیل bare return به return@label
-        for k in range(i + 1, close_i):
-            lines[k] = re.sub(r'\breturn(?!@)\s+', 'return@' + label + ' ', lines[k])
-        new_first = indent + signature + " {\n" + indent + "    return " + label + args + " {\n"
-        lines[i] = new_first
-        close_line = lines[close_i]
-        lines[close_i] = close_line[:close_col] + "    }\n" + indent + "}" + close_line[close_col + 1:]
-    
-    print("  🔧 " + label + ": " + signature[:60])
-    count += 1
-    i += 1
+    # جایگزینی
+    content = content[:m.start()] + new_func + content[close_pos + 1:]
+    print("  ✓ " + signature[:60])
 
 with open("App_raw.kt", "w") as f:
-    f.writelines(lines)
+    f.write(content)
 
-print("✅ " + str(count) + " تابع تبدیل شد")
+print("✅ تبدیل کامل شد")
 PYEOF
 
-echo ""
-
 # ═══ ۳. فیکس تایپوها ═══
-echo "🔧 فیکس تایپوها..."
 sed -i 's/^omposable/@Composable/g' App_raw.kt
 sed -i 's/^n App(/fun App(/g' App_raw.kt
 
 # ═══ ۴. اضافه کردن importها ═══
-echo "🔧 اضافه کردن importها..."
-
 python3 << 'PYEOF'
 import re
-with open("App_raw.kt", "r") as f:
+with open("App_raw.kt") as f:
     content = f.read()
 
 IMPORTS = """import android.app.Notification
@@ -357,24 +361,13 @@ with open("App.kt", "w") as f:
 print("✅ importها اضافه شد")
 PYEOF
 
-# ═══ ۵. گزارش ═══
 echo ""
 echo "═══════════════════════════════════════════════════"
 echo " ✅ App.kt آماده شد!"
 echo "═══════════════════════════════════════════════════"
 echo " 📏 حجم: $(wc -l < App.kt) خط"
-echo " 📦 importها: $(grep -c '^import ' App.kt)"
+echo " 📦 import: $(grep -c '^import ' App.kt)"
 echo "═══════════════════════════════════════════════════"
-
-# بررسی نهایی
-echo ""
-echo "🔍 بررسی Bare Returnهای باقی‌مانده..."
-REMAINING=$(grep -nE "^\s*return\s" App.kt | grep -v "return@" | head -5 || true)
-if [ -z "$REMAINING" ]; then
-    echo "  ✅ هیچ bare return باقی نمانده"
-else
-    echo "  ⚠️ $REMAINING"
-fi
 
 rm -f App_raw.kt
 exit 0
