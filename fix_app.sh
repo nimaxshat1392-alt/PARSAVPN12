@@ -2,97 +2,81 @@
 set -e
 
 echo "═══════════════════════════════════════════════════"
-echo " 🔧 فیکس App.kt"
+echo " 🔧 فیکس نهایی App.kt"
 echo "═══════════════════════════════════════════════════"
-
-if [ ! -f "PARSAVPN.sh" ]; then
-    echo "❌ PARSAVPN.sh پیدا نشد!"
-    exit 1
-fi
-
-# ═══ ۱. استخراج Kotlin با Python ═══
-echo "📦 استخراج Kotlin..."
 
 python3 << 'PYEOF'
 import re
 
 with open("PARSAVPN.sh") as f:
-    lines = f.readlines()
+    text = f.read()
 
-# شروع
-start = -1
-for i, l in enumerate(lines):
-    if l.startswith("package com.mlmvpn.app"):
-        start = i
-        break
+# ═══ پیدا کردن شروع و پایان Kotlin ═══
+start_match = re.search(r'^package com\.mlmvpn\.app', text, re.MULTILINE)
+start = start_match.start()
 
-if start < 0:
-    print("❌ package پیدا نشد")
-    exit(1)
-
-# پایان
+# پایان با نشانه‌ها
 end_markers = [
-    re.compile(r'^X\d+\s*$'),
-    re.compile(r'^KOTLIN_EOF'),
-    re.compile(r'^cat >'),
-    re.compile(r'^cat >>'),
-    re.compile(r'^echo ""\s*$'),
-    re.compile(r'^echo "═'),
-    re.compile(r'^exit 0\s*$'),
-    re.compile(r'^ROOT='),
-    re.compile(r'^chmod \+'),
-    re.compile(r'^mkdir -p'),
-    re.compile(r'^rem\s', re.IGNORECASE),
-    re.compile(r'^@echo'),
-    re.compile(r'^::'),
-    re.compile(r'^# ═'),
+    r'^X\d+\s*$', r'^KOTLIN_EOF', r'^cat >', r'^cat >>',
+    r'^echo ""\s*$', r'^echo "═', r'^exit 0\s*$',
+    r'^ROOT=', r'^chmod \+', r'^mkdir -p',
+    r'^rem\s', r'^@echo', r'^::',
 ]
 
-end = len(lines)
-for i in range(start + 100, len(lines)):
-    for m in end_markers:
-        if m.match(lines[i]):
-            end = i
-            break
-    if end != len(lines):
+end = len(text)
+for m in re.finditer('|'.join('(?:' + p + ')' for p in end_markers), text, re.MULTILINE):
+    if m.start() > start + 2000:
+        end = m.start()
         break
 
-kotlin = "".join(lines[start:end])
+kotlin = text[start:end]
+
+# ═══ فیکس String? در addProperty ═══
+def fix_addprop(m):
+    prefix = m.group(1)
+    value = m.group(2).rstrip()
+    suffix = m.group(3)
+    
+    # اگه already safe
+    if '?:' in value or '!!' in value:
+        return m.group(0)
+    if value.startswith('"') and value.endswith('"'):
+        return m.group(0)
+    if value in ('true', 'false', 'null'):
+        return m.group(0)
+    if re.match(r'^-?\d+(\.\d+)?[fFdDL]?$', value):
+        return m.group(0)
+    if any(op in value for op in ('==', '!=', '&&', '||', '>', '<')):
+        return m.group(0)
+    
+    return prefix + value + ' ?: ""' + suffix
+
+kotlin = re.sub(
+    r'(addProperty\(\s*"[^"]+"\s*,\s*)([^()\n]+?)(\s*\))',
+    fix_addprop,
+    kotlin
+)
+
+# ═══ فیکس uri.host و uri.userInfo هر جای دیگه ═══
+kotlin = re.sub(r'server\s*=\s*u\.host\b', 'server = u.host ?: ""', kotlin)
+kotlin = re.sub(r'server\s*=\s*uri\.host\b', 'server = uri.host ?: ""', kotlin)
+kotlin = re.sub(r'addProperty\("id",\s*uri\.userInfo\)', 'addProperty("id", uri.userInfo ?: "")', kotlin)
+kotlin = re.sub(r'addProperty\("password",\s*uri\.userInfo\)', 'addProperty("password", uri.userInfo ?: "")', kotlin)
+
+# ═══ تایپوها ═══
+kotlin = kotlin.replace("omposable", "@Composable")
+kotlin = re.sub(r'^n App\(', 'fun App(', kotlin, flags=re.MULTILINE)
+kotlin = kotlin.replace("else -> return null", "else -> null")
+
 kotlin = re.sub(r'\n{3,}', '\n\n', kotlin)
 
 with open("App.kt", "w") as f:
     f.write(kotlin)
 
-print("✅ استخراج شد: {} خط".format(len(kotlin.splitlines())))
+print("📏 حجم: {} خط".format(len(kotlin.splitlines())))
 PYEOF
 
-# ═══ ۲. چک وجود فایل ═══
-if [ ! -f "App.kt" ]; then
-    echo "❌ App.kt ساخته نشد!"
-    exit 1
-fi
-
-# ═══ ۳. فیکس Type Mismatch (String? → String) ═══
-echo "🔧 فیکس Type Mismatch..."
-
-sed -i 's/addProperty("address", u\.host)/addProperty("address", u.host ?: "")/g' App.kt
-sed -i 's/addProperty("address", uri\.host)/addProperty("address", uri.host ?: "")/g' App.kt
-sed -i 's/addProperty("id", u\.userInfo)/addProperty("id", u.userInfo ?: "")/g' App.kt
-sed -i 's/addProperty("id", uri\.userInfo)/addProperty("id", uri.userInfo ?: "")/g' App.kt
-sed -i 's/addProperty("password", u\.userInfo)/addProperty("password", u.userInfo ?: "")/g' App.kt
-sed -i 's/addProperty("password", uri\.userInfo)/addProperty("password", uri.userInfo ?: "")/g' App.kt
-sed -i 's/server = uri\.host/server = uri.host ?: ""/g' App.kt
-sed -i 's/addProperty("serverName", p\["sni"\] ?: addr ?: "")/addProperty("serverName", p["sni"] ?: addr ?: "")/g' App.kt
-
-# ═══ ۴. فیکس تایپوها ═══
-echo "🔧 فیکس تایپوها..."
-sed -i 's/^omposable/@Composable/g' App.kt
-sed -i 's/^n App(/fun App(/g' App.kt
-sed -i 's/else -> return null/else -> null/g' App.kt
-
-# ═══ ۵. اضافه کردن importها ═══
-echo "🔧 اضافه کردن importها..."
-
+# ═══ اضافه کردن importها ═══
 python3 << 'PYEOF'
 import re
 with open("App.kt") as f:
@@ -310,7 +294,6 @@ with open("App.kt", "w") as f:
 print("✅ import اضافه شد")
 PYEOF
 
-# ═══ ۶. جایگزینی App(vm) ═══
 if grep -q "fun AppFinal()" App.kt; then
     sed -i 's/App(vm)/AppFinal()/g' App.kt
 fi
