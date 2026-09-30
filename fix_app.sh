@@ -2,42 +2,73 @@
 set -e
 
 echo "═══════════════════════════════════════════════════"
-echo " 🔧 فیکس نهایی App.kt"
+echo " 🔧 فیکس نهایی (Python only)"
 echo "═══════════════════════════════════════════════════"
 
 python3 << 'PYEOF'
 import re
 
-with open("PARSAVPN.sh") as f:
+# ═══ ۱. خواندن فایل با UTF-8 ═══
+with open("PARSAVPN.sh", encoding="utf-8", errors="replace") as f:
     text = f.read()
 
-# ═══ پیدا کردن شروع و پایان Kotlin ═══
-start_match = re.search(r'^package com\.mlmvpn\.app', text, re.MULTILINE)
-start = start_match.start()
+# ═══ ۲. پیدا کردن شروع و پایان Kotlin ═══
+start = text.find("package com.mlmvpn.app")
+if start < 0:
+    print("❌ package پیدا نشد")
+    exit(1)
+print("🎯 شروع: {}".format(start))
 
-# پایان با نشانه‌ها
+# پیدا کردن پایان
 end_markers = [
-    r'^X\d+\s*$', r'^KOTLIN_EOF', r'^cat >', r'^cat >>',
-    r'^echo ""\s*$', r'^echo "═', r'^exit 0\s*$',
-    r'^ROOT=', r'^chmod \+', r'^mkdir -p',
-    r'^rem\s', r'^@echo', r'^::',
+    r'^X\d+\s*$',
+    r'^KOTLIN_EOF',
+    r'^cat >',
+    r'^cat >>',
+    r'^echo ""\s*$',
+    r'^exit 0\s*$',
+    r'^ROOT=',
+    r'^chmod \+',
+    r'^mkdir -p',
+    r'^rem\s',
+    r'^::\s',
 ]
 
 end = len(text)
-for m in re.finditer('|'.join('(?:' + p + ')' for p in end_markers), text, re.MULTILINE):
-    if m.start() > start + 2000:
-        end = m.start()
-        break
+search_area = text[start + 5000:]
+for m in re.finditer("|".join(end_markers), search_area, re.MULTILINE):
+    end = start + 5000 + m.start()
+    print("🎯 پایان: {} — {}".format(end, m.group()[:30]))
+    break
 
 kotlin = text[start:end]
 
-# ═══ فیکس String? در addProperty ═══
+# ═══ ۳. پاک‌سازی خطوط خراب ═══
+# حذف خطوطی که فقط کاراکتر "C" دارن
+lines = kotlin.split("\n")
+clean = []
+for line in lines:
+    # خطوط bash باقی‌مونده
+    if re.match(r'^X\d+\s*$', line):
+        continue
+    if line.strip() in ("KOTLIN_EOF", "EOF"):
+        continue
+    # خطوطی که فقط "C" دارن (باقی‌مونده از خرابی sed)
+    if line.strip() == "C":
+        continue
+    if line.strip().startswith("C ") and len(line.strip()) < 5:
+        continue
+    clean.append(line)
+kotlin = "\n".join(clean)
+
+# ═══ ۴. فیکس تایپوها (بدون sed) ═══
+kotlin = kotlin.replace("\nomposable", "\n@Composable")
+kotlin = kotlin.replace("\nn App(", "\nfun App(")
+kotlin = kotlin.replace("else -> return null", "else -> null")
+
+# ═══ ۵. فیکس String? → String ═══
 def fix_addprop(m):
-    prefix = m.group(1)
-    value = m.group(2).rstrip()
-    suffix = m.group(3)
-    
-    # اگه already safe
+    prefix, value, suffix = m.group(1), m.group(2).rstrip(), m.group(3)
     if '?:' in value or '!!' in value:
         return m.group(0)
     if value.startswith('"') and value.endswith('"'):
@@ -46,9 +77,6 @@ def fix_addprop(m):
         return m.group(0)
     if re.match(r'^-?\d+(\.\d+)?[fFdDL]?$', value):
         return m.group(0)
-    if any(op in value for op in ('==', '!=', '&&', '||', '>', '<')):
-        return m.group(0)
-    
     return prefix + value + ' ?: ""' + suffix
 
 kotlin = re.sub(
@@ -57,31 +85,12 @@ kotlin = re.sub(
     kotlin
 )
 
-# ═══ فیکس uri.host و uri.userInfo هر جای دیگه ═══
-kotlin = re.sub(r'server\s*=\s*u\.host\b', 'server = u.host ?: ""', kotlin)
-kotlin = re.sub(r'server\s*=\s*uri\.host\b', 'server = uri.host ?: ""', kotlin)
-kotlin = re.sub(r'addProperty\("id",\s*uri\.userInfo\)', 'addProperty("id", uri.userInfo ?: "")', kotlin)
-kotlin = re.sub(r'addProperty\("password",\s*uri\.userInfo\)', 'addProperty("password", uri.userInfo ?: "")', kotlin)
+# ═══ ۶. فیکس uri.host / userInfo ═══
+kotlin = re.sub(r'server\s*=\s*u\.host\b(?!\s*\?)', 'server = u.host ?: ""', kotlin)
+kotlin = re.sub(r'server\s*=\s*uri\.host\b(?!\s*\?)', 'server = uri.host ?: ""', kotlin)
+kotlin = re.sub(r'(addProperty\("(?:id|password)",\s*)(?:uri|u)\.userInfo\)', r'\1u.userInfo ?: "")', kotlin)
 
-# ═══ تایپوها ═══
-kotlin = kotlin.replace("omposable", "@Composable")
-kotlin = re.sub(r'^n App\(', 'fun App(', kotlin, flags=re.MULTILINE)
-kotlin = kotlin.replace("else -> return null", "else -> null")
-
-kotlin = re.sub(r'\n{3,}', '\n\n', kotlin)
-
-with open("App.kt", "w") as f:
-    f.write(kotlin)
-
-print("📏 حجم: {} خط".format(len(kotlin.splitlines())))
-PYEOF
-
-# ═══ اضافه کردن importها ═══
-python3 << 'PYEOF'
-import re
-with open("App.kt") as f:
-    content = f.read()
-
+# ═══ ۷. اضافه کردن importها ═══
 IMPORTS = """import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -267,40 +276,33 @@ import java.util.UUID
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger"""
 
-pkg = re.search(r'^package\s+com\.mlmvpn\.app\s*$', content, re.MULTILINE)
-if not pkg:
-    print("❌ package پیدا نشد")
-    exit(1)
+# پیدا کردن آخر package
+pkg_end = kotlin.find("\n", kotlin.find("package com.mlmvpn.app")) + 1
 
-lines = content.split("\n")
-out = []
-found_pkg = False
-for line in lines:
-    s = line.strip()
-    if s.startswith("package ") and not found_pkg:
-        out.append(line)
-        out.append("")
-        out.append(IMPORTS)
-        out.append("")
-        found_pkg = True
-        continue
-    if found_pkg and s.startswith("import "):
-        continue
-    out.append(line)
+head = kotlin[:pkg_end]
+rest = kotlin[pkg_end:]
 
-final = re.sub(r'\n{3,}', '\n\n', "\n".join(out))
-with open("App.kt", "w") as f:
+# حذف importهای قدیمی
+lines = rest.split("\n")
+out = [l for l in lines if not l.strip().startswith("import ")]
+
+final = head + "\n" + IMPORTS + "\n" + "\n".join(out)
+final = re.sub(r'\n{3,}', '\n\n', final)
+
+# جایگزینی App(vm)
+if "fun AppFinal()" in final:
+    final = final.replace("App(vm)", "AppFinal()")
+
+# ═══ ۸. نوشتن با UTF-8 ═══
+with open("App.kt", "w", encoding="utf-8") as f:
     f.write(final)
-print("✅ import اضافه شد")
+
+print("✅ App.kt ساخته شد: {} خط".format(len(final.splitlines())))
 PYEOF
 
-if grep -q "fun AppFinal()" App.kt; then
-    sed -i 's/App(vm)/AppFinal()/g' App.kt
-fi
-
+# ═══ گزارش ═══
 echo ""
 echo "═══════════════════════════════════════════════════"
-echo " ✅ App.kt آماده شد!"
 echo " 📏 حجم: $(wc -l < App.kt) خط"
 echo " 📦 import: $(grep -c '^import ' App.kt)"
 echo "═══════════════════════════════════════════════════"
