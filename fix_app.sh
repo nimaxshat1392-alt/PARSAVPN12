@@ -5,107 +5,93 @@ echo "════════════════════════�
 echo " 🔧 فیکس نهایی App.kt"
 echo "═══════════════════════════════════════════════════"
 
-# ═══ ۱. پیدا کردن شروع Kotlin ═══
-START=$(grep -n "^package com.mlmvpn.app" PARSAVPN.sh | head -1 | cut -d: -f1)
-if [ -z "$START" ]; then
-    echo "❌ package پیدا نشد"
+if [ ! -f "PARSAVPN.sh" ]; then
+    echo "❌ PARSAVPN.sh پیدا نشد!"
     exit 1
 fi
-echo "🎯 شروع: خط $START"
 
-# ═══ ۲. پیدا کردن پایان با چند نشانه‌گر ═══
-END=$(awk -v s="$START" '
-    NR > s {
-        # نشانه‌های پایان Kotlin
-        if (/^KOTLIN_EOF/ || /^X[0-9]+$/ || /^cat >/ || /^cat >>/ || \
-            /^echo ""/ || /^echo "═══/ || /^exit 0/ || /^set -e/ || \
-            /^ROOT=/ || /^chmod / || /^mkdir -p/) {
-            print NR
-            exit
-        }
-    }
-' PARSAVPN.sh)
+TOTAL=$(wc -l < PARSAVPN.sh)
+echo "📏 حجم PARSAVPN.sh: $TOTAL خط"
 
-# اگه پیدا نشد → دنبال آخرین } در ستون ۰ بگرد
-if [ -z "$END" ]; then
-    echo "⚠️ نشانه پایان پیدا نشد، دنبال آخرین } در ستون ۰..."
-    END=$(awk -v s="$START" '
-        NR > s && /^}$/ { last = NR }
-        END { print last + 1 }
-    ' PARSAVPN.sh)
-fi
-
-[ -z "$END" ] && END=$(wc -l < PARSAVPN.sh)
-echo "🎯 پایان: خط $END"
-
-# ═══ ۳. نمایش اطراف خط پایان (برای دیباگ) ═══
-echo ""
-echo "📋 ۵ خط قبل از پایان:"
-sed -n "$((END-5)),$((END-1))p" PARSAVPN.sh | cat -n | sed 's/^/    /'
-echo ""
-echo "📋 خط پایان و بعدش:"
-sed -n "${END},$((END+3))p" PARSAVPN.sh | cat -n | sed 's/^/    /'
-echo ""
-
-# ═══ ۴. استخراج ═══
-sed -n "${START},$((END-1))p" PARSAVPN.sh > App.kt
-LINES=$(wc -l < App.kt)
-echo "✅ استخراج شد: $LINES خط"
-echo ""
-
-# ═══ ۵. بررسی: آیا خطوط bash داخلش هست؟ ═══
-echo "🔍 بررسی خطوط bash داخل Kotlin..."
-BASH_LINES=$(grep -cE "^(cat >|echo |X[0-9]+$|ROOT=|chmod |mkdir -p|exit 0|set -e|rem )" App.kt || true)
-echo "   تعداد خطوط مشکوک bash: $BASH_LINES"
-
-if [ "$BASH_LINES" -gt 0 ]; then
-    echo "   📋 نمونه:"
-    grep -nE "^(cat >|echo |X[0-9]+$|ROOT=|chmod |mkdir -p|exit 0|set -e|rem )" App.kt | head -5 | sed 's/^/     /'
-fi
-echo ""
-
-# ═══ ۶. برش در انتها: حذف هر خط bash باقی‌مانده ═══
-echo "🔧 برش انتهایی خطوط bash..."
+# ═══ استخراج با Python با تشخیص دقیق پایان ═══
 python3 << 'PYEOF'
 import re
 
-with open("App.kt") as f:
-    lines = f.readlines()
+with open("PARSAVPN.sh") as f:
+    all_lines = f.readlines()
 
-# پیدا کردن آخرین } در ستون ۰
-last_close = -1
-for i in range(len(lines) - 1, -1, -1):
-    if lines[i].rstrip() == "}":
-        last_close = i
+# پیدا کردن شروع Kotlin
+start = -1
+for i, l in enumerate(all_lines):
+    if l.startswith("package com.mlmvpn.app"):
+        start = i
         break
 
-if last_close > 0 and last_close < len(lines) - 1:
-    print("  ✂️ برش تا خط " + str(last_close + 1))
-    lines = lines[:last_close + 1]
+if start < 0:
+    print("❌ خط 'package com.mlmvpn.app' پیدا نشد")
+    exit(1)
 
-# چک نهایی برای bash
-final = "".join(lines)
-final = re.sub(r'\n{3,}', '\n\n', final)
+print("🎯 شروع Kotlin در خط {}".format(start + 1))
 
-with open("App.kt", "w") as f:
-    f.write(final)
+# نشانه‌های پایان Kotlin
+end_markers = [
+    re.compile(r'^X\d+\s*$'),           # X1, X2, X12, ...
+    re.compile(r'^KOTLIN_EOF\s*$'),     # KOTLIN_EOF
+    re.compile(r'^cat >'),              # cat > file
+    re.compile(r'^cat >>'),             # cat >> file
+    re.compile(r'^echo ""\s*$'),        # echo "" (bash)
+    re.compile(r'^echo "═'),            # echo "═══ (bash)
+    re.compile(r'^exit 0\s*$'),         # exit 0
+    re.compile(r'^ROOT='),              # ROOT=...
+    re.compile(r'^chmod \+'),           # chmod +x
+    re.compile(r'^mkdir -p\s'),         # mkdir -p
+    re.compile(r'^rem\s', re.IGNORECASE),  # rem (windows batch)
+    re.compile(r'^@echo\s', re.IGNORECASE),# @echo (windows batch)
+    re.compile(r'^::'),                 # :: (batch comment)
+    re.compile(r'^# ═════'),            # bash separator
+]
 
-print("  ✅ برش انجام شد")
+# شروع جستجو از ۱۰۰ خط بعد از package (برای نادیده گرفتن کامنت‌های داخل Kotlin)
+end = len(all_lines)
+for i in range(start + 100, len(all_lines)):
+    for m in end_markers:
+        if m.match(all_lines[i]):
+            end = i
+            print("🎯 پایان Kotlin در خط {}: {}".format(i + 1, all_lines[i].rstrip()[:60]))
+            break
+    if end != len(all_lines):
+        break
+
+if end == len(all_lines):
+    print("⚠️ نشانه پایان پیدا نشد — تا آخر فایل گرفته می‌شه")
+
+# استخراج
+kotlin = "".join(all_lines[start:end])
+
+# پاک‌سازی
+kotlin = re.sub(r'\n{3,}', '\n\n', kotlin)
+
+with open("App_raw.kt", "w") as f:
+    f.write(kotlin)
+
+lines_count = len(kotlin.splitlines())
+print("📏 حجم استخراج: {} خط".format(lines_count))
 PYEOF
 
-LINES=$(wc -l < App.kt)
-echo "📏 حجم نهایی: $LINES خط"
 echo ""
 
-# ═══ ۷. فیکس تایپوها ═══
-sed -i 's/^omposable/@Composable/g' App.kt
-sed -i 's/^n App(/fun App(/g' App.kt
-sed -i 's/else -> return null/else -> null/g' App.kt
+# ═══ فیکس تایپوها ═══
+echo "🔧 فیکس تایپوها..."
+sed -i 's/^omposable/@Composable/g' App_raw.kt
+sed -i 's/^n App(/fun App(/g' App_raw.kt
+sed -i 's/else -> return null/else -> null/g' App_raw.kt
 
-# ═══ ۸. اضافه کردن importها ═══
+# ═══ اضافه کردن importها ═══
+echo "🔧 اضافه کردن importها..."
+
 python3 << 'PYEOF'
 import re
-with open("App.kt") as f:
+with open("App_raw.kt") as f:
     content = f.read()
 
 IMPORTS = """import android.app.Notification
@@ -323,13 +309,19 @@ PYEOF
 # جایگزینی App(vm)
 if grep -q "fun AppFinal()" App.kt; then
     sed -i 's/App(vm)/AppFinal()/g' App.kt
+    echo "🔧 App(vm) → AppFinal()"
 fi
 
 echo ""
 echo "═══════════════════════════════════════════════════"
 echo " ✅ آماده شد!"
-echo " 📏 حجم: $(wc -l < App.kt) خط"
+echo " 📏 حجم نهایی: $(wc -l < App.kt) خط"
 echo " 📦 import: $(grep -c '^import ' App.kt)"
 echo "═══════════════════════════════════════════════════"
+echo ""
+echo "📋 ۵ خط آخر:"
+tail -5 App.kt
+echo ""
 
+rm -f App_raw.kt
 exit 0
