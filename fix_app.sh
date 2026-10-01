@@ -4,20 +4,19 @@ set -e
 python3 << 'PYEOF'
 import re
 
-# ═══ ۱. خواندن ═══
+# ۱. خواندن
 with open("PARSAVPN.sh", encoding="utf-8", errors="replace") as f:
     text = f.read()
 
-# ═══ ۲. استخراج Kotlin ═══
+# ۲. استخراج
 start = text.find("package com.mlmvpn.app")
 end = text.find("KOTLIN_EOF", start)
 if end < 0:
     m = re.search(r'\nX\d+\s*\n', text[start:])
     end = start + m.start() if m else len(text)
-
 kotlin = text[start:end]
 
-# ═══ ۳. پاک‌سازی ═══
+# ۳. پاک‌سازی
 clean = []
 for line in kotlin.split("\n"):
     s = line.strip()
@@ -26,34 +25,16 @@ for line in kotlin.split("\n"):
     clean.append(line)
 kotlin = "\n".join(clean)
 
-# ═══ ۴. فیکس تایپوها ═══
+# ★★★ فقط یک فیکس: u.userInfo ★★★
+kotlin = re.sub(r'\bu\.userInfo\b(?!\s*[?:!])', 'u.userInfo ?: ""', kotlin)
+kotlin = re.sub(r'\buri\.userInfo\b(?!\s*[?:!])', 'uri.userInfo ?: ""', kotlin)
+
+# ۴. تایپوها
 kotlin = kotlin.replace("\nomposable", "\n@Composable")
 kotlin = kotlin.replace("\nn App(", "\nfun App(")
 kotlin = kotlin.replace("else -> return null", "else -> null")
 
-# ═══ ۵. فیکس همه String? → String ═══
-def fix_nullable(m):
-    s = m.group(0).rstrip()
-    if '?:' in s or '!!' in s:
-        return m.group(0)
-    return m.group(0) + ' ?: ""'
-
-# uri.host, u.host
-kotlin = re.sub(r'\b(uri|u)\.(host|userInfo)\b(?!\s*[!?])', r'\1.\2 ?: ""', kotlin)
-# prefs.getString
-kotlin = re.sub(r'\.getString\([^)]+\)(?!\s*[?:!])', fix_nullable, kotlin)
-# intent.getStringExtra
-kotlin = re.sub(r'\.getStringExtra\([^)]+\)(?!\s*[?:!])', fix_nullable, kotlin)
-# json.get(...)?.asString
-kotlin = re.sub(r'\.get\([^)]+\)\?\.asString(?!\s*[?:!])', fix_nullable, kotlin)
-# p["key"]
-kotlin = re.sub(r'\bp\["[^"]+"\](?!\s*[?:!])', fix_nullable, kotlin)
-# val x: String = expr
-kotlin = re.sub(r'(\b(?:val|var)\s+\w+\s*:\s*String\s*=\s*)([^\n]+?)(\s*)$',
-                lambda m: m.group(1) + m.group(2) + ('' if '?:' in m.group(2) or '!!' in m.group(2) else ' ?: ""') + m.group(3),
-                kotlin, flags=re.MULTILINE)
-
-# ═══ ۶. Imports ═══
+# ۵. Imports
 IMPORTS = """import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -239,7 +220,6 @@ import java.util.UUID
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger"""
 
-# ═══ ۷. ترکیب ═══
 pkg_end = kotlin.find("\n", kotlin.find("package com.mlmvpn.app")) + 1
 head = kotlin[:pkg_end]
 rest = kotlin[pkg_end:]
@@ -250,20 +230,18 @@ final = re.sub(r'\n{3,}', '\n\n', final)
 if "fun AppFinal()" in final:
     final = final.replace("App(vm)", "AppFinal()")
 
-# ═══ ۸. نوشتن ═══
 with open("App.kt", "w", encoding="utf-8") as f:
     f.write(final)
 
 print("✅ App.kt: {} خط".format(len(final.splitlines())))
 
-# ═══ ۹. نمایش خط ۹۸۴ ═══
+# نمایش خط ۹۸۴
 lines = final.split("\n")
 if len(lines) > 984:
     print("")
     print("╔" + "═"*60 + "╗")
     print("║" + "  📍 خط ۹۸۴ در App.kt  ".center(60) + "║")
     print("╚" + "═"*60 + "╝")
-    print("")
     print(">>> " + lines[983])
     print("")
 PYEOF
