@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-echo "🔧 فیکس نهایی..."
+echo "🔧 ساخت App.kt..."
 
 python3 << 'PYEOF'
 import re
@@ -9,7 +9,6 @@ import re
 with open("PARSAVPN.sh", encoding="utf-8", errors="replace") as f:
     text = f.read()
 
-# شروع و پایان
 start = text.find("package com.mlmvpn.app")
 markers = r'^X\d+\s*$|^KOTLIN_EOF|^cat >|^cat >>|^echo ""\s*$|^exit 0\s*$|^ROOT=|^chmod \+|^mkdir -p|^rem\s|^::\s'
 m = re.search(markers, text[start+3000:], re.MULTILINE)
@@ -26,19 +25,11 @@ for line in kotlin.split("\n"):
     clean.append(line)
 kotlin = "\n".join(clean)
 
-# تایپوها
 kotlin = kotlin.replace("\nomposable", "\n@Composable")
 kotlin = kotlin.replace("\nn App(", "\nfun App(")
 kotlin = kotlin.replace("else -> return null", "else -> null")
+kotlin = re.sub(r'\b(uri|u)\.(host|userInfo)\b(?!\s*[!?])', r'\1.\2 ?: ""', kotlin)
 
-# ★★★ فیکس اصلی: uri.host و uri.userInfo ★★★
-kotlin = re.sub(
-    r'\b(uri|u)\.(host|userInfo)\b(?!\s*[!?])',
-    r'\1.\2 ?: ""',
-    kotlin
-)
-
-# Imports
 IMPORTS = """import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -238,6 +229,20 @@ with open("App.kt", "w", encoding="utf-8") as f:
     f.write(final)
 
 print("✅ {} خط".format(len(final.splitlines())))
-PYEOF
 
-echo "📏 حجم: $(wc -l < App.kt) خط"
+# ★★★ چاپ خط 984 ★★★
+lines = final.split("\n")
+if len(lines) >= 984:
+    print("")
+    print("═══════════════════════════════════════════")
+    print("📍 خط ۹۸۴ در App.kt:")
+    print("═══════════════════════════════════════════")
+    print(lines[983])
+    print("═══════════════════════════════════════════")
+    print("")
+    print("📍 ۵ خط قبل و ۵ خط بعد:")
+    for i in range(max(0, 978), min(990, len(lines))):
+        marker = " ← این" if i == 983 else ""
+        print("{:4d}: {}{}".format(i+1, lines[i], marker))
+    print("")
+PYEOF
