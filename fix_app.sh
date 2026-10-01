@@ -4,10 +4,11 @@ set -e
 python3 << 'PYEOF'
 import re
 
-# ═══ ۱. خواندن و استخراج ═══
+# ═══ خواندن ═══
 with open("PARSAVPN.sh", encoding="utf-8", errors="replace") as f:
     text = f.read()
 
+# ═══ استخراج ═══
 start = text.find("package com.mlmvpn.app")
 end = text.find("KOTLIN_EOF", start)
 if end < 0:
@@ -23,85 +24,18 @@ for line in kotlin.split("\n"):
     clean.append(line)
 kotlin = "\n".join(clean)
 
-# ═══ ۲. فیکس خط به خط addProperty ═══
-lines = kotlin.split("\n")
-new_lines = []
-for line in lines:
-    if "addProperty(" in line and "?:" not in line and "!!" not in line:
-        # پیدا کردن موقعیت addProperty(
-        idx = line.find("addProperty(")
-        if idx < 0:
-            new_lines.append(line)
-            continue
-        
-        # پیدا کردن آرگومان‌ها
-        depth = 0
-        end_idx = -1
-        arg_start = idx + len("addProperty(")
-        for i in range(arg_start, len(line)):
-            if line[i] == '(':
-                depth += 1
-            elif line[i] == ')':
-                if depth == 0:
-                    end_idx = i
-                    break
-                depth -= 1
-        
-        if end_idx < 0:
-            new_lines.append(line)
-            continue
-        
-        args_str = line[arg_start:end_idx]
-        
-        # پیدا کردن اولین کاما در depth 0
-        depth = 0
-        comma_idx = -1
-        for i, c in enumerate(args_str):
-            if c == '(':
-                depth += 1
-            elif c == ')':
-                depth -= 1
-            elif c == ',' and depth == 0:
-                comma_idx = i
-                break
-        
-        if comma_idx < 0:
-            new_lines.append(line)
-            continue
-        
-        name = args_str[:comma_idx].strip()
-        value = args_str[comma_idx+1:].strip()
-        
-        # رد کن string literal
-        if value.startswith('"') and value.endswith('"'):
-            new_lines.append(line)
-            continue
-        # رد کن مقادیر پایه
-        if value in ('true', 'false', 'null'):
-            new_lines.append(line)
-            continue
-        if re.match(r'^-?\d+(\.\d+)?[fFdDL]?$', value):
-            new_lines.append(line)
-            continue
-        
-        # فیکس
-        new_args = name + ', ' + value + ' ?: ""'
-        line = line[:arg_start] + new_args + line[end_idx:]
-    
-    new_lines.append(line)
+# ★★★ فقط این ۴ الگو رو فیکس کن ★★★
+kotlin = re.sub(r'(\bu\.userInfo)(?!\s*[?!])', r'\1 ?: ""', kotlin)
+kotlin = re.sub(r'(\buri\.userInfo)(?!\s*[?!])', r'\1 ?: ""', kotlin)
+kotlin = re.sub(r'(\bu\.host)(?!\s*[?!])', r'\1 ?: ""', kotlin)
+kotlin = re.sub(r'(\buri\.host)(?!\s*[?!])', r'\1 ?: ""', kotlin)
 
-kotlin = "\n".join(new_lines)
-
-# ═══ ۳. فیکس uri.host و uri.userInfo ═══
-kotlin = re.sub(r'(\b(?:uri|u)\.host)(?!\s*[?!])', r'\1 ?: ""', kotlin)
-kotlin = re.sub(r'(\b(?:uri|u)\.userInfo)(?!\s*[?!])', r'\1 ?: ""', kotlin)
-
-# ═══ ۴. تایپوها ═══
+# تایپوها
 kotlin = kotlin.replace("\nomposable", "\n@Composable")
 kotlin = kotlin.replace("\nn App(", "\nfun App(")
 kotlin = kotlin.replace("else -> return null", "else -> null")
 
-# ═══ ۵. Imports ═══
+# ═══ Imports ═══
 IMPORTS = """import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -302,28 +236,39 @@ with open("App.kt", "w", encoding="utf-8") as f:
 
 print("✅ App.kt: {} خط".format(len(final.splitlines())))
 
-# ═══ نمایش خط 984 در همه جا ═══
+# ═══ ذخیره خطوط مهم در summary ═══
 lines = final.split("\n")
-if len(lines) > 984:
-    l984 = lines[983]
-    print("")
-    print("╔" + "═"*70 + "╗")
-    print("║  خط 984 در App.kt نهایی:".ljust(71) + "║")
-    print("╚" + "═"*70 + "╝")
-    print(">>> " + l984)
-    print("")
-    print("::error title=خط 984::" + l984)
-    print("")
+summary = []
+summary.append("## 📋 خطوط مهم App.kt\n")
+summary.append("### خط ۳۷۳:")
+summary.append("```kotlin")
+if len(lines) > 372: summary.append(lines[372])
+summary.append("```\n")
+summary.append("### خط ۴۵۴:")
+summary.append("```kotlin")
+if len(lines) > 453: summary.append(lines[453])
+summary.append("```\n")
+summary.append("### خط ۹۸۴:")
+summary.append("```kotlin")
+if len(lines) > 983: summary.append(lines[983])
+summary.append("```\n")
+summary.append("### ۱۰ خط اطراف ۹۸۴:")
+summary.append("```kotlin")
+for i in range(max(0, 978), min(992, len(lines))):
+    m = " ← خطا" if i == 983 else ""
+    summary.append("{}: {}{}".format(i+1, lines[i], m))
+summary.append("```")
+
+with open("/tmp/summary.txt", "w", encoding="utf-8") as f:
+    f.write("\n".join(summary))
+
+print("\n".join(summary))
 PYEOF
 
-# افزودن خط 984 به summary گیت‌هاب
-if [ -f "App.kt" ]; then
-    LINE_984=$(sed -n '984p' App.kt)
-    {
-        echo "## 🔍 خط 984 در App.kt"
-        echo ""
-        echo '```kotlin'
-        echo "$LINE_984"
-        echo '```'
-    } >> "$GITHUB_STEP_SUMMARY"
+# نوشتن در summary گیت‌هاب
+if [ -f "/tmp/summary.txt" ]; then
+    cat /tmp/summary.txt >> "$GITHUB_STEP_SUMMARY"
 fi
+
+echo ""
+echo "✅ Done!"
