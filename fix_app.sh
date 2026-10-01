@@ -4,11 +4,10 @@ set -e
 python3 << 'PYEOF'
 import re
 
-# ۱. خواندن
+# ═══ ۱. خواندن و استخراج ═══
 with open("PARSAVPN.sh", encoding="utf-8", errors="replace") as f:
     text = f.read()
 
-# ۲. استخراج
 start = text.find("package com.mlmvpn.app")
 end = text.find("KOTLIN_EOF", start)
 if end < 0:
@@ -16,7 +15,6 @@ if end < 0:
     end = start + m.start() if m else len(text)
 kotlin = text[start:end]
 
-# ۳. پاک‌سازی
 clean = []
 for line in kotlin.split("\n"):
     s = line.strip()
@@ -25,36 +23,85 @@ for line in kotlin.split("\n"):
     clean.append(line)
 kotlin = "\n".join(clean)
 
-# ═══════════════════════════════════════════════
-#  ۴. فیکس‌های امن (فقط این‌ها)
-# ═══════════════════════════════════════════════
+# ═══ ۲. فیکس خط به خط addProperty ═══
+lines = kotlin.split("\n")
+new_lines = []
+for line in lines:
+    if "addProperty(" in line and "?:" not in line and "!!" not in line:
+        # پیدا کردن موقعیت addProperty(
+        idx = line.find("addProperty(")
+        if idx < 0:
+            new_lines.append(line)
+            continue
+        
+        # پیدا کردن آرگومان‌ها
+        depth = 0
+        end_idx = -1
+        arg_start = idx + len("addProperty(")
+        for i in range(arg_start, len(line)):
+            if line[i] == '(':
+                depth += 1
+            elif line[i] == ')':
+                if depth == 0:
+                    end_idx = i
+                    break
+                depth -= 1
+        
+        if end_idx < 0:
+            new_lines.append(line)
+            continue
+        
+        args_str = line[arg_start:end_idx]
+        
+        # پیدا کردن اولین کاما در depth 0
+        depth = 0
+        comma_idx = -1
+        for i, c in enumerate(args_str):
+            if c == '(':
+                depth += 1
+            elif c == ')':
+                depth -= 1
+            elif c == ',' and depth == 0:
+                comma_idx = i
+                break
+        
+        if comma_idx < 0:
+            new_lines.append(line)
+            continue
+        
+        name = args_str[:comma_idx].strip()
+        value = args_str[comma_idx+1:].strip()
+        
+        # رد کن string literal
+        if value.startswith('"') and value.endswith('"'):
+            new_lines.append(line)
+            continue
+        # رد کن مقادیر پایه
+        if value in ('true', 'false', 'null'):
+            new_lines.append(line)
+            continue
+        if re.match(r'^-?\d+(\.\d+)?[fFdDL]?$', value):
+            new_lines.append(line)
+            continue
+        
+        # فیکس
+        new_args = name + ', ' + value + ' ?: ""'
+        line = line[:arg_start] + new_args + line[end_idx:]
+    
+    new_lines.append(line)
 
-# 4.1: uri.host و u.host (بدون ? یا ! بعدش)
-kotlin = re.sub(r'(\buri\.host|\bu\.host)(?!\s*[?!])', r'\1 ?: ""', kotlin)
+kotlin = "\n".join(new_lines)
 
-# 4.2: uri.userInfo و u.userInfo
-kotlin = re.sub(r'(\buri\.userInfo|\bu\.userInfo)(?!\s*[?!])', r'\1 ?: ""', kotlin)
+# ═══ ۳. فیکس uri.host و uri.userInfo ═══
+kotlin = re.sub(r'(\b(?:uri|u)\.host)(?!\s*[?!])', r'\1 ?: ""', kotlin)
+kotlin = re.sub(r'(\b(?:uri|u)\.userInfo)(?!\s*[?!])', r'\1 ?: ""', kotlin)
 
-# 4.3: uri.path و u.path
-kotlin = re.sub(r'(\buri\.path|\bu\.path)(?!\s*[?!])', r'\1 ?: "/"', kotlin)
-
-# 4.4: json.get("x")?.asString بدون ?:
-kotlin = re.sub(r'\.get\("([^"]+)"\)\?\.asString(?!\s*[?:!])', r'.get("\1")?.asString ?: ""', kotlin)
-
-# 4.5: intent.getStringExtra بدون ?:
-kotlin = re.sub(r'\.getStringExtra\(([^)\n]+)\)(?!\s*[?:!])', r'.getStringExtra(\1) ?: ""', kotlin)
-
-# 4.6: prefs.getString بدون ?:
-kotlin = re.sub(r'(prefs|pref|sp)\.getString\(([^)\n]+)\)(?!\s*[?:!])', r'\1.getString(\2) ?: ""', kotlin)
-
-# 5. تایپوها
+# ═══ ۴. تایپوها ═══
 kotlin = kotlin.replace("\nomposable", "\n@Composable")
 kotlin = kotlin.replace("\nn App(", "\nfun App(")
 kotlin = kotlin.replace("else -> return null", "else -> null")
 
-# ═══════════════════════════════════════════════
-#  ۶. Imports
-# ═══════════════════════════════════════════════
+# ═══ ۵. Imports ═══
 IMPORTS = """import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -255,15 +302,28 @@ with open("App.kt", "w", encoding="utf-8") as f:
 
 print("✅ App.kt: {} خط".format(len(final.splitlines())))
 
-# نمایش خطوط 393-397 و 984 برای دیباگ
+# ═══ نمایش خط 984 در همه جا ═══
 lines = final.split("\n")
-print("")
-print("### خطوط 393-397:")
-for i in range(392, 398):
-    if i < len(lines):
-        print("{}: {}".format(i+1, lines[i]))
-print("")
-print("### خط 984:")
-if len(lines) > 983:
-    print(">>> " + lines[983])
+if len(lines) > 984:
+    l984 = lines[983]
+    print("")
+    print("╔" + "═"*70 + "╗")
+    print("║  خط 984 در App.kt نهایی:".ljust(71) + "║")
+    print("╚" + "═"*70 + "╝")
+    print(">>> " + l984)
+    print("")
+    print("::error title=خط 984::" + l984)
+    print("")
 PYEOF
+
+# افزودن خط 984 به summary گیت‌هاب
+if [ -f "App.kt" ]; then
+    LINE_984=$(sed -n '984p' App.kt)
+    {
+        echo "## 🔍 خط 984 در App.kt"
+        echo ""
+        echo '```kotlin'
+        echo "$LINE_984"
+        echo '```'
+    } >> "$GITHUB_STEP_SUMMARY"
+fi
