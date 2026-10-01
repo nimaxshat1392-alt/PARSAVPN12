@@ -4,10 +4,11 @@ set -e
 python3 << 'PYEOF'
 import re
 
-# ═══ خواندن و استخراج ═══
+# ═══ ۱. خواندن ═══
 with open("PARSAVPN.sh", encoding="utf-8", errors="replace") as f:
     text = f.read()
 
+# ═══ ۲. استخراج ═══
 start = text.find("package com.mlmvpn.app")
 end = text.find("KOTLIN_EOF", start)
 if end < 0:
@@ -23,47 +24,37 @@ for line in kotlin.split("\n"):
     clean.append(line)
 kotlin = "\n".join(clean)
 
-# ═══════════════════════════════════════════════════════════
-#  🔧 فیکس ۱: server = u.host یا uri.host
-# ═══════════════════════════════════════════════════════════
-kotlin = re.sub(
-    r'server\s*=\s*(u|uri)\.host\b(?!\s*[?!])',
-    r'server = \1.host ?: ""',
-    kotlin
-)
+# ═══════════════════════════════════════════════════════
+#  ⭐ فیکس اصلی: replace مستقیم خط‌به‌خط
+# ═══════════════════════════════════════════════════════
+lines = kotlin.split("\n")
+new_lines = []
+for line in lines:
+    # ۱. server = u.host → server = u.host ?: ""
+    line = re.sub(r'\bserver\s*=\s*u\.host\b(?!\s*[?!])', 'server = u.host ?: ""', line)
+    line = re.sub(r'\bserver\s*=\s*uri\.host\b(?!\s*[?!])', 'server = uri.host ?: ""', line)
 
-# ═══════════════════════════════════════════════════════════
-#  🔧 فیکس ۲: addProperty با if-else → پرانتز
-# ═══════════════════════════════════════════════════════════
-def fix_addprop_if(m):
-    prefix = m.group(1)
-    condition = m.group(2)
-    true_val = m.group(3)
-    false_val = m.group(4)
-    return prefix + "(" + condition + " " + true_val + " else " + false_val + "))"
+    # ۲. u.userInfo / uri.userInfo
+    line = re.sub(r'\bu\.userInfo\b(?!\s*[?!])', 'u.userInfo ?: ""', line)
+    line = re.sub(r'\buri\.userInfo\b(?!\s*[?!])', 'uri.userInfo ?: ""', line)
 
-kotlin = re.sub(
-    r'(addProperty\("[^"]+",\s*)'
-    r'(if\s*\([^)]+\)\s*)'
-    r'([^\n]+?)\s+else\s+'
-    r'([^\n,)]+)\)',
-    fix_addprop_if,
-    kotlin
-)
+    # ۳. addProperty با if-else → پرانتز
+    if 'addProperty(' in line and ' if (' in line and ' else ' in line:
+        line = re.sub(
+            r'(addProperty\([^,]+,\s*)(if\s*\([^)]+\)\s*[^\n]+?else\s*[^\n,)]+)(\))',
+            r'\1(\2)\3',
+            line
+        )
 
-# ═══════════════════════════════════════════════════════════
-#  🔧 فیکس ۳: userInfo
-# ═══════════════════════════════════════════════════════════
-kotlin = re.sub(r'(\b(?:u|uri)\.userInfo)(?!\s*[?!])', r'\1 ?: ""', kotlin)
+    new_lines.append(line)
+kotlin = "\n".join(new_lines)
 
-# ═══════════════════════════════════════════════════════════
-#  🔧 فیکس ۴: تایپوها
-# ═══════════════════════════════════════════════════════════
+# ═══ ۳. تایپوها ═══
 kotlin = kotlin.replace("\nomposable", "\n@Composable")
 kotlin = kotlin.replace("\nn App(", "\nfun App(")
 kotlin = kotlin.replace("else -> return null", "else -> null")
 
-# ═══ Imports ═══
+# ═══ ۴. Imports ═══
 IMPORTS = """import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -262,12 +253,16 @@ if "fun AppFinal()" in final:
 with open("App.kt", "w", encoding="utf-8") as f:
     f.write(final)
 
-print("✅ App.kt: {} خط".format(len(final.splitlines())))
-
-# ═══ چک خطوط مهم ═══
+# ═══ چک نهایی ═══
 lines = final.split("\n")
-checks = [373, 454, 984]
-for c in checks:
-    if c <= len(lines):
-        print("خط {}: {}".format(c, lines[c-1][:120]))
+print("✅ App.kt: {} خط".format(len(lines)))
+
+# چک خط 984
+if len(lines) > 983:
+    print("خط 984: " + lines[983])
+
+# چک برای باقی‌مونده ا.host بدون ?:
+for i, line in enumerate(lines):
+    if re.search(r'\bserver\s*=\s*(u|uri)\.host\b(?!\s*\?)', line):
+        print("⚠️ خط {}: {}".format(i+1, line))
 PYEOF
