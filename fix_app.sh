@@ -1,30 +1,16 @@
 #!/bin/bash
 set -e
 
-echo "🔧 فیکس..."
+echo "🔧 استخراج و آماده‌سازی..."
 
-# ۱. استخراج
-sed -n '/^package com.mlmvpn.app/,/^KOTLIN_EOF/p' PARSAVPN.sh | sed '$d' > App_body.kt
+# ═══ ۱. استخراج با sed ═══
+sed -n '/^package com.mlmvpn.app/,/^KOTLIN_EOF/p' PARSAVPN.sh | sed '$d' > body.txt
 
-# ۲. حذف importهای قدیمی از body
-python3 -c "
-with open('App_body.kt') as f: lines = f.readlines()
-out = []
-started = False
-for line in lines:
-    s = line.strip()
-    if not started:
-        if s.startswith('package ') or s == '' or s.startswith('import '):
-            if s.startswith('package '):
-                continue
-            continue
-        started = True
-    out.append(line)
-with open('App_body.kt', 'w') as f: f.writelines(out)
-"
+# ═══ ۲. حذف package و importهای قدیمی از body ═══
+grep -v '^package com.mlmvpn.app' body.txt | grep -v '^import ' > body_clean.txt
 
-# ۳. ساخت imports
-cat > App_head.kt << 'HEAD_EOF'
+# ═══ ۳. ساخت فایل نهایی ═══
+cat > App.kt << 'HEAD_EOF'
 package com.mlmvpn.app
 
 import android.app.Notification
@@ -222,32 +208,18 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 HEAD_EOF
 
-# ۴. ترکیب
-cat App_head.kt App_body.kt > App.kt
+# ═══ ۴. اضافه کردن body ═══
+cat body_clean.txt >> App.kt
 
-# ۵. فیکس‌های سریع
-sed -i 's|^omposable|@Composable|g' App.kt
-sed -i 's|^n App(|fun App(|g' App.kt
-sed -i 's|else -> null|else -> throw IllegalArgumentException("x")|g' App.kt
-sed -i 's|else -> return null|else -> throw IllegalArgumentException("x")|g' App.kt
-sed -i 's|// LibXray\.startXray|LibXray.startXray|g' App.kt
-sed -i 's|// LibXray\.stopXray|LibXray.stopXray|g' App.kt
+# ═══ ۵. فیکس‌های ساده با sed ═══
+sed -i 's/^omposable/@Composable/' App.kt
+sed -i 's/^n App(/fun App(/' App.kt
+sed -i 's/App(vm)/AppFinal()/g' App.kt
+sed -i 's/"home" -> HomeFinal(vm) { screen = it }/"home" -> HotVpnHome(vm) { screen = it }/' App.kt
+sed -i 's|// LibXray.startXray|LibXray.startXray|' App.kt
+sed -i 's|// LibXray.stopXray|LibXray.stopXray|' App.kt
 
-# ۶. فیکس String?
-python3 -c "
-import re
-with open('App.kt') as f: c = f.read()
-c = re.sub(r'\bserver\s*=\s*u\.host\b(?!\s*[?!])', 'server = u.host ?: \"\"', c)
-c = re.sub(r'\bserver\s*=\s*uri\.host\b(?!\s*[?!])', 'server = uri.host ?: \"\"', c)
-c = re.sub(r'\bu\.userInfo\b(?!\s*[?!])', 'u.userInfo ?: \"\"', c)
-c = re.sub(r'\buri\.userInfo\b(?!\s*[?!])', 'uri.userInfo ?: \"\"', c)
-with open('App.kt', 'w') as f: f.write(c)
-"
-
-# ۷. تغییر Home
-sed -i 's|"home" -> HomeFinal(vm) { screen = it }|"home" -> HotVpnHome(vm) { screen = it }|' App.kt
-
-# ۸. اضافه کردن UI جدید به انتها
+# ═══ ۶. Append UI جدید ═══
 cat >> App.kt << 'UI_EOF'
 
 @Composable
@@ -258,7 +230,6 @@ fun HotVpnHome(vm: VpnViewModel, nav: (String) -> Unit) {
     var menuOpen by remember { mutableStateOf(false) }
     var darkMode by remember { mutableStateOf(false) }
     var seconds by remember { mutableStateOf(0L) }
-    var userIp by remember { mutableStateOf("Getting ip...") }
 
     LaunchedEffect(st) {
         if (st == ConnState.CONNECTED) {
@@ -271,6 +242,9 @@ fun HotVpnHome(vm: VpnViewModel, nav: (String) -> Unit) {
     val tc = if (darkMode) Color.White else Color(0xFF1A1A2E)
     val sc = if (darkMode) Color.White.copy(0.6f) else Color(0xFF7A7A8C)
     val cardBg = if (darkMode) Color(0xFF1A1A2E) else Color.White
+    val btnColor = if (st == ConnState.CONNECTED)
+        listOf(Color(0xFF00E676), Color(0xFF00B8D4))
+    else listOf(Color(0xFFFF5252), Color(0xFFFF1744))
 
     Box(Modifier.fillMaxSize().background(bg)) {
         Column(Modifier.fillMaxSize().padding(20.dp), horizontalAlignment = Alignment.CenterHorizontally) {
@@ -289,9 +263,7 @@ fun HotVpnHome(vm: VpnViewModel, nav: (String) -> Unit) {
                     }
                 }
             }
-
             Spacer(Modifier.height(20.dp))
-
             Box(Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp))
                 .background(cardBg).clickable { nav("servers") }.padding(16.dp)) {
                 Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween, Alignment.CenterVertically) {
@@ -307,20 +279,16 @@ fun HotVpnHome(vm: VpnViewModel, nav: (String) -> Unit) {
                     Icon(Icons.Filled.ChevronRight, null, tint = sc)
                 }
             }
-
             Spacer(Modifier.height(40.dp))
-            Text("Your IP : $userIp", color = sc, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+            Text("Your IP : Getting ip...", color = sc, fontSize = 14.sp, fontWeight = FontWeight.Medium)
             Spacer(Modifier.height(30.dp))
-
             Box(Modifier.size(220.dp), contentAlignment = Alignment.Center) {
                 Box(Modifier.size(220.dp).clip(CircleShape)
-                    .background(if (st == ConnState.CONNECTED) Color(0xFF00E676).copy(0.1f) else Color(0xFFFF4444).copy(0.1f)))
+                    .background(btnColor[0].copy(0.1f)))
                 Box(Modifier.size(180.dp).clip(CircleShape)
-                    .background(if (st == ConnState.CONNECTED) Color(0xFF00E676).copy(0.15f) else Color(0xFFFF4444).copy(0.15f)))
+                    .background(btnColor[0].copy(0.15f)))
                 Box(Modifier.size(150.dp).clip(CircleShape)
-                    .background(Brush.linearGradient(
-                        if (st == ConnState.CONNECTED) listOf(Color(0xFF00E676), Color(0xFF00B8D4))
-                        else listOf(Color(0xFFFF5252), Color(0xFFFF1744))))
+                    .background(Brush.linearGradient(btnColor))
                     .clickable {
                         when (st) {
                             ConnState.CONNECTED -> vm.disconnect()
@@ -342,11 +310,8 @@ fun HotVpnHome(vm: VpnViewModel, nav: (String) -> Unit) {
                     }, color = Color.White, fontSize = 28.sp, fontWeight = FontWeight.Bold)
                 }
             }
-
             Spacer(Modifier.height(30.dp))
-            Icon(Icons.Filled.Security, null,
-                tint = if (st == ConnState.CONNECTED) Color(0xFF00E676) else Color(0xFFFF4444),
-                modifier = Modifier.size(28.dp))
+            Icon(Icons.Filled.Security, null, tint = btnColor[0], modifier = Modifier.size(28.dp))
             Spacer(Modifier.height(6.dp))
             Text(when (st) {
                 ConnState.CONNECTED -> "Connected"
@@ -413,6 +378,4 @@ fun formatTime(sec: Long): String {
 UI_EOF
 
 echo "✅ App.kt: $(wc -l < App.kt) خط"
-
-# پاک‌سازی
-rm -f App_head.kt App_body.kt
+rm -f body.txt body_clean.txt
