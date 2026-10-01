@@ -4,11 +4,10 @@ set -e
 python3 << 'PYEOF'
 import re
 
-# ═══ خواندن ═══
+# ═══ خواندن و استخراج ═══
 with open("PARSAVPN.sh", encoding="utf-8", errors="replace") as f:
     text = f.read()
 
-# ═══ استخراج ═══
 start = text.find("package com.mlmvpn.app")
 end = text.find("KOTLIN_EOF", start)
 if end < 0:
@@ -24,13 +23,42 @@ for line in kotlin.split("\n"):
     clean.append(line)
 kotlin = "\n".join(clean)
 
-# ★★★ فقط این ۴ الگو رو فیکس کن ★★★
-kotlin = re.sub(r'(\bu\.userInfo)(?!\s*[?!])', r'\1 ?: ""', kotlin)
-kotlin = re.sub(r'(\buri\.userInfo)(?!\s*[?!])', r'\1 ?: ""', kotlin)
-kotlin = re.sub(r'(\bu\.host)(?!\s*[?!])', r'\1 ?: ""', kotlin)
-kotlin = re.sub(r'(\buri\.host)(?!\s*[?!])', r'\1 ?: ""', kotlin)
+# ═══════════════════════════════════════════════════════════
+#  🔧 فیکس ۱: server = u.host یا uri.host
+# ═══════════════════════════════════════════════════════════
+kotlin = re.sub(
+    r'server\s*=\s*(u|uri)\.host\b(?!\s*[?!])',
+    r'server = \1.host ?: ""',
+    kotlin
+)
 
-# تایپوها
+# ═══════════════════════════════════════════════════════════
+#  🔧 فیکس ۲: addProperty با if-else → پرانتز
+# ═══════════════════════════════════════════════════════════
+def fix_addprop_if(m):
+    prefix = m.group(1)
+    condition = m.group(2)
+    true_val = m.group(3)
+    false_val = m.group(4)
+    return prefix + "(" + condition + " " + true_val + " else " + false_val + "))"
+
+kotlin = re.sub(
+    r'(addProperty\("[^"]+",\s*)'
+    r'(if\s*\([^)]+\)\s*)'
+    r'([^\n]+?)\s+else\s+'
+    r'([^\n,)]+)\)',
+    fix_addprop_if,
+    kotlin
+)
+
+# ═══════════════════════════════════════════════════════════
+#  🔧 فیکس ۳: userInfo
+# ═══════════════════════════════════════════════════════════
+kotlin = re.sub(r'(\b(?:u|uri)\.userInfo)(?!\s*[?!])', r'\1 ?: ""', kotlin)
+
+# ═══════════════════════════════════════════════════════════
+#  🔧 فیکس ۴: تایپوها
+# ═══════════════════════════════════════════════════════════
 kotlin = kotlin.replace("\nomposable", "\n@Composable")
 kotlin = kotlin.replace("\nn App(", "\nfun App(")
 kotlin = kotlin.replace("else -> return null", "else -> null")
@@ -236,39 +264,10 @@ with open("App.kt", "w", encoding="utf-8") as f:
 
 print("✅ App.kt: {} خط".format(len(final.splitlines())))
 
-# ═══ ذخیره خطوط مهم در summary ═══
+# ═══ چک خطوط مهم ═══
 lines = final.split("\n")
-summary = []
-summary.append("## 📋 خطوط مهم App.kt\n")
-summary.append("### خط ۳۷۳:")
-summary.append("```kotlin")
-if len(lines) > 372: summary.append(lines[372])
-summary.append("```\n")
-summary.append("### خط ۴۵۴:")
-summary.append("```kotlin")
-if len(lines) > 453: summary.append(lines[453])
-summary.append("```\n")
-summary.append("### خط ۹۸۴:")
-summary.append("```kotlin")
-if len(lines) > 983: summary.append(lines[983])
-summary.append("```\n")
-summary.append("### ۱۰ خط اطراف ۹۸۴:")
-summary.append("```kotlin")
-for i in range(max(0, 978), min(992, len(lines))):
-    m = " ← خطا" if i == 983 else ""
-    summary.append("{}: {}{}".format(i+1, lines[i], m))
-summary.append("```")
-
-with open("/tmp/summary.txt", "w", encoding="utf-8") as f:
-    f.write("\n".join(summary))
-
-print("\n".join(summary))
+checks = [373, 454, 984]
+for c in checks:
+    if c <= len(lines):
+        print("خط {}: {}".format(c, lines[c-1][:120]))
 PYEOF
-
-# نوشتن در summary گیت‌هاب
-if [ -f "/tmp/summary.txt" ]; then
-    cat /tmp/summary.txt >> "$GITHUB_STEP_SUMMARY"
-fi
-
-echo ""
-echo "✅ Done!"
