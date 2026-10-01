@@ -25,16 +25,45 @@ for line in kotlin.split("\n"):
     clean.append(line)
 kotlin = "\n".join(clean)
 
-# ★★★ فقط یک فیکس: u.userInfo ★★★
-kotlin = re.sub(r'\bu\.userInfo\b(?!\s*[?:!])', 'u.userInfo ?: ""', kotlin)
-kotlin = re.sub(r'\buri\.userInfo\b(?!\s*[?:!])', 'uri.userInfo ?: ""', kotlin)
+# ═══════════════════════════════════════════════════════════
+# ۴. فیکس تهاجمی همه String? ← String
+# ═══════════════════════════════════════════════════════════
 
-# ۴. تایپوها
+# 4.1: .asString که بعدش ) یا , هست
+kotlin = re.sub(r'\.asString(?=\s*[\),])', '.asString ?: ""', kotlin)
+
+# 4.2: .getString(...) که بعدش ) نیست
+kotlin = re.sub(r'\.getString\(([^)\n]+)\)(?!\s*[\?:!])', r'.getString(\1) ?: ""', kotlin)
+
+# 4.3: .getStringExtra(...)
+kotlin = re.sub(r'\.getStringExtra\(([^)\n]+)\)(?!\s*[\?:!])', r'.getStringExtra(\1) ?: ""', kotlin)
+
+# 4.4: uri.host, u.host
+kotlin = re.sub(r'\b(uri|u)\.host\b(?!\s*[!?])', r'\1.host ?: ""', kotlin)
+
+# 4.5: uri.userInfo, u.userInfo
+kotlin = re.sub(r'\b(uri|u)\.userInfo\b(?!\s*[!?])', r'\1.userInfo ?: ""', kotlin)
+
+# 4.6: uri.path, u.path
+kotlin = re.sub(r'\b(uri|u)\.path\b(?!\s*[!?])', r'\1.path ?: "/"', kotlin)
+
+# 4.7: p["key"] map access
+kotlin = re.sub(r'\bp\[("[^"]+")\](?!\s*[?:!])', r'p[\1] ?: ""', kotlin)
+
+# 4.8: getValue(String::class.java)
+kotlin = re.sub(r'\.getValue\(String::class\.java\)(?!\s*[\?:!])', r'.getValue(String::class.java) ?: ""', kotlin)
+
+# 4.9: json.get("x")?.asString بدون ?:
+kotlin = re.sub(r'\.get\("([^"]+)"\)\?\.asString(?!\s*[\?:!])', r'.get("\1")?.asString ?: ""', kotlin)
+
+# 5. تایپوها
 kotlin = kotlin.replace("\nomposable", "\n@Composable")
 kotlin = kotlin.replace("\nn App(", "\nfun App(")
 kotlin = kotlin.replace("else -> return null", "else -> null")
 
-# ۵. Imports
+# ═══════════════════════════════════════════════════════════
+# ۶. Imports
+# ═══════════════════════════════════════════════════════════
 IMPORTS = """import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -234,14 +263,4 @@ with open("App.kt", "w", encoding="utf-8") as f:
     f.write(final)
 
 print("✅ App.kt: {} خط".format(len(final.splitlines())))
-
-# نمایش خط ۹۸۴
-lines = final.split("\n")
-if len(lines) > 984:
-    print("")
-    print("╔" + "═"*60 + "╗")
-    print("║" + "  📍 خط ۹۸۴ در App.kt  ".center(60) + "║")
-    print("╚" + "═"*60 + "╝")
-    print(">>> " + lines[983])
-    print("")
 PYEOF
