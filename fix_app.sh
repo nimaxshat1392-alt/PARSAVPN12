@@ -2,60 +2,58 @@
 set -e
 
 python3 << 'PYEOF'
+import re
+
+# ═══ ۱. خواندن ═══
 with open("PARSAVPN.sh", encoding="utf-8", errors="replace") as f:
     text = f.read()
 
-# شروع از package
+# ═══ ۲. استخراج Kotlin ═══
 start = text.find("package com.mlmvpn.app")
-if start < 0:
-    print("❌ package پیدا نشد")
-    exit(1)
-
-# ★★★ پایان: دنبال KOTLIN_EOF از start به بعد ★★★
 end = text.find("KOTLIN_EOF", start)
 if end < 0:
-    # اگه KOTLIN_EOF نبود، دنبال اولین خطی که با X رقم شروع می‌شه
-    import re
     m = re.search(r'\nX\d+\s*\n', text[start:])
-    if m:
-        end = start + m.start()
-    else:
-        end = len(text)
+    end = start + m.start() if m else len(text)
 
-print("🎯 شروع: {} — پایان: {} — طول: {}".format(start, end, end-start))
-
-# استخراج فقط Kotlin
 kotlin = text[start:end]
 
-# پاک‌سازی خطوط اضافی
+# ═══ ۳. پاک‌سازی ═══
 clean = []
 for line in kotlin.split("\n"):
     s = line.strip()
-    # خطوط نشانه bash
-    if s in ("KOTLIN_EOF", "EOF") or (s.startswith("X") and s[1:].isdigit() and len(s) < 5):
-        break  # اینجا تمومش کن
-    if s.startswith("cat >") or s.startswith("cat >>"):
-        break
-    if s.startswith("echo ") or s.startswith("rem ") or s.startswith("@echo"):
-        break
-    if s.startswith("chmod ") or s.startswith("mkdir "):
-        break
-    if s == "exit 0":
-        break
+    if s in ("KOTLIN_EOF", "EOF"): break
+    if s.startswith("cat >") or s.startswith("echo ") or s == "exit 0": break
     clean.append(line)
-
 kotlin = "\n".join(clean)
 
-# فیکس تایپوها
+# ═══ ۴. فیکس تایپوها ═══
 kotlin = kotlin.replace("\nomposable", "\n@Composable")
 kotlin = kotlin.replace("\nn App(", "\nfun App(")
 kotlin = kotlin.replace("else -> return null", "else -> null")
 
-# ★ فیکس String? ★
-import re
-kotlin = re.sub(r'\b(uri|u)\.(host|userInfo)\b(?!\s*[!?])', r'\1.\2 ?: ""', kotlin)
+# ═══ ۵. فیکس همه String? → String ═══
+def fix_nullable(m):
+    s = m.group(0).rstrip()
+    if '?:' in s or '!!' in s:
+        return m.group(0)
+    return m.group(0) + ' ?: ""'
 
-# ★ Importها ★
+# uri.host, u.host
+kotlin = re.sub(r'\b(uri|u)\.(host|userInfo)\b(?!\s*[!?])', r'\1.\2 ?: ""', kotlin)
+# prefs.getString
+kotlin = re.sub(r'\.getString\([^)]+\)(?!\s*[?:!])', fix_nullable, kotlin)
+# intent.getStringExtra
+kotlin = re.sub(r'\.getStringExtra\([^)]+\)(?!\s*[?:!])', fix_nullable, kotlin)
+# json.get(...)?.asString
+kotlin = re.sub(r'\.get\([^)]+\)\?\.asString(?!\s*[?:!])', fix_nullable, kotlin)
+# p["key"]
+kotlin = re.sub(r'\bp\["[^"]+"\](?!\s*[?:!])', fix_nullable, kotlin)
+# val x: String = expr
+kotlin = re.sub(r'(\b(?:val|var)\s+\w+\s*:\s*String\s*=\s*)([^\n]+?)(\s*)$',
+                lambda m: m.group(1) + m.group(2) + ('' if '?:' in m.group(2) or '!!' in m.group(2) else ' ?: ""') + m.group(3),
+                kotlin, flags=re.MULTILINE)
+
+# ═══ ۶. Imports ═══
 IMPORTS = """import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -241,6 +239,7 @@ import java.util.UUID
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger"""
 
+# ═══ ۷. ترکیب ═══
 pkg_end = kotlin.find("\n", kotlin.find("package com.mlmvpn.app")) + 1
 head = kotlin[:pkg_end]
 rest = kotlin[pkg_end:]
@@ -251,10 +250,20 @@ final = re.sub(r'\n{3,}', '\n\n', final)
 if "fun AppFinal()" in final:
     final = final.replace("App(vm)", "AppFinal()")
 
+# ═══ ۸. نوشتن ═══
 with open("App.kt", "w", encoding="utf-8") as f:
     f.write(final)
 
-print("✅ حجم نهایی App.kt: {} خط".format(len(final.splitlines())))
-PYEOF
+print("✅ App.kt: {} خط".format(len(final.splitlines())))
 
-echo "✅ Done"
+# ═══ ۹. نمایش خط ۹۸۴ ═══
+lines = final.split("\n")
+if len(lines) > 984:
+    print("")
+    print("╔" + "═"*60 + "╗")
+    print("║" + "  📍 خط ۹۸۴ در App.kt  ".center(60) + "║")
+    print("╚" + "═"*60 + "╝")
+    print("")
+    print(">>> " + lines[983])
+    print("")
+PYEOF
